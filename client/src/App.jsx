@@ -11,6 +11,7 @@ import EventsList from './pages/admin/EventsList';
 import EventForm from './pages/admin/EventForm';
 import OrdersList from './pages/admin/OrdersList';
 import LoginPage from './pages/admin/LoginPage';
+import EmailsList from './pages/admin/EmailsList';
 import OrderSuccessPage from './pages/OrderSuccessPage';
 
 export default function App() {
@@ -33,6 +34,7 @@ export default function App() {
             <Route path="events/new" element={<EventForm />} />
             <Route path="events/:id/edit" element={<EventForm />} />
             <Route path="orders" element={<OrdersList />} />
+            <Route path="emails" element={<EmailsList />} />
             <Route path="login" element={<LoginPage />} />
           </Route>
         </Routes>

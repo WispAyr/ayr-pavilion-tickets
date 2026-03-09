@@ -1,5 +1,5 @@
 const path = require('path');
-require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 const express = require('express');
 const cors = require('cors');
@@ -68,6 +68,9 @@ const ticketsRoutes = require('./routes/tickets');
 const scanRoutes = require('./routes/scan');
 const adminRoutes = require('./routes/admin');
 
+const trackingRoutes = require('./routes/tracking');
+
+app.use('/api/track', trackingRoutes);
 app.use('/api/events', eventsRoutes);
 app.use('/api', ticketTypesRoutes);
 app.use('/api/tickets', ticketsRoutes);

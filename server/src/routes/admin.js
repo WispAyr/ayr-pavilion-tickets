@@ -5,6 +5,7 @@ const bcryptjs = require('bcryptjs');
 const { getDb } = require('../db');
 const { adminAuth } = require('../middleware/auth');
 const { createRefund } = require('../services/stripe');
+const { resendEmail } = require('../services/email');
 
 // POST /api/admin/login - authenticate admin
 router.post('/login', (req, res) => {
@@ -270,6 +271,95 @@ router.get('/events/:id/door-list', adminAuth, (req, res) => {
   } catch (err) {
     console.error('Error fetching door list:', err);
     res.status(500).json({ error: 'Failed to fetch door list' });
+  }
+});
+
+// GET /api/admin/emails - list email logs with filtering
+router.get('/emails', adminAuth, (req, res) => {
+  try {
+    const db = getDb();
+    const { page = 1, limit = 50, eventId, status } = req.query;
+    const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
+
+    let query = `
+      SELECT el.*,
+        e.title as event_title,
+        o.order_ref
+      FROM email_logs el
+      LEFT JOIN orders o ON el.order_id = o.id
+      LEFT JOIN events e ON o.event_id = e.id
+    `;
+    let countQuery = `
+      SELECT COUNT(*) as count FROM email_logs el
+      LEFT JOIN orders o ON el.order_id = o.id
+      LEFT JOIN events e ON o.event_id = e.id
+    `;
+    const conditions = [];
+    const params = [];
+
+    if (eventId) {
+      conditions.push('o.event_id = ?');
+      params.push(eventId);
+    }
+    if (status) {
+      conditions.push('el.status = ?');
+      params.push(status);
+    }
+
+    if (conditions.length > 0) {
+      const where = ' WHERE ' + conditions.join(' AND ');
+      query += where;
+      countQuery += where;
+    }
+
+    const total = db.prepare(countQuery).get(...params);
+
+    query += ' ORDER BY el.created_at DESC LIMIT ? OFFSET ?';
+    const emails = db.prepare(query).all(...params, parseInt(limit, 10), offset);
+
+    // Summary stats
+    const stats = db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'sent' OR status = 'resent' THEN 1 ELSE 0 END) as sent,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+        SUM(CASE WHEN opened_count > 0 THEN 1 ELSE 0 END) as opened,
+        SUM(CASE WHEN clicked_count > 0 THEN 1 ELSE 0 END) as clicked
+      FROM email_logs
+    `).get();
+
+    res.json({
+      emails,
+      stats: {
+        total: stats.total,
+        sent: stats.sent,
+        failed: stats.failed,
+        opened: stats.opened,
+        clicked: stats.clicked,
+        open_rate: stats.sent > 0 ? ((stats.opened / stats.sent) * 100).toFixed(1) : '0.0',
+        click_rate: stats.sent > 0 ? ((stats.clicked / stats.sent) * 100).toFixed(1) : '0.0'
+      },
+      pagination: {
+        page: parseInt(page, 10),
+        limit: parseInt(limit, 10),
+        total: total.count,
+        pages: Math.ceil(total.count / parseInt(limit, 10))
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching email logs:', err);
+    res.status(500).json({ error: 'Failed to fetch email logs' });
+  }
+});
+
+// POST /api/admin/emails/:id/resend - resend a failed email
+router.post('/emails/:id/resend', adminAuth, async (req, res) => {
+  try {
+    await resendEmail(parseInt(req.params.id, 10));
+    res.json({ message: 'Email resent successfully' });
+  } catch (err) {
+    console.error('Resend error:', err);
+    res.status(500).json({ error: err.message || 'Failed to resend email' });
   }
 });
 

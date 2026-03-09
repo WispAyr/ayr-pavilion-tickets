@@ -8,6 +8,7 @@ import {
   Menu,
   X,
   Ticket,
+  Mail,
 } from 'lucide-react';
 import { isAdminLoggedIn, adminLogout } from '../../lib/api';
 
@@ -15,6 +16,7 @@ const navItems = [
   { to: '/admin', icon: LayoutDashboard, label: 'Dashboard', exact: true },
   { to: '/admin/events', icon: CalendarDays, label: 'Events' },
   { to: '/admin/orders', icon: ShoppingCart, label: 'Orders' },
+  { to: '/admin/emails', icon: Mail, label: 'Emails' },
 ];
 
 export default function AdminLayout() {

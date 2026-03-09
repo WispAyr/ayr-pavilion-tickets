@@ -102,6 +102,22 @@ function initialize() {
       key TEXT PRIMARY KEY,
       value TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS email_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER REFERENCES tickets(id),
+      order_id INTEGER REFERENCES orders(id),
+      recipient TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      status TEXT DEFAULT 'queued',
+      sent_at TEXT,
+      opened_at TEXT,
+      opened_count INTEGER DEFAULT 0,
+      clicked_at TEXT,
+      clicked_count INTEGER DEFAULT 0,
+      error TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
   `);
 
   console.log('Database initialized successfully');

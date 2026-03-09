@@ -1,11 +1,12 @@
 const nodemailer = require('nodemailer');
 const { generateQrBuffer } = require('./qr');
+const { getDb } = require('../db');
 
 function createTransporter() {
   return nodemailer.createTransport({
     host: process.env.SMTP_HOST,
-    port: parseInt(process.env.SMTP_PORT || '587', 10),
-    secure: parseInt(process.env.SMTP_PORT || '587', 10) === 465,
+    port: parseInt(process.env.SMTP_PORT || '465', 10),
+    secure: process.env.SMTP_SECURE === 'true',
     auth: {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS
@@ -16,7 +17,6 @@ function createTransporter() {
 function buildGoogleCalendarUrl({ title, dateTime, venue, description }) {
   const startDate = new Date(dateTime);
   const endDate = new Date(startDate.getTime() + 3 * 60 * 60 * 1000);
-
   const formatDate = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
 
   const params = new URLSearchParams({
@@ -30,25 +30,37 @@ function buildGoogleCalendarUrl({ title, dateTime, venue, description }) {
   return `https://calendar.google.com/calendar/render?${params.toString()}`;
 }
 
-function buildEmailHtml({ eventTitle, dateTime, doorsOpen, venue, ticketTypeName, ticketCode, quantity, orderRef, calendarUrl }) {
+function trackUrl(emailLogId, targetUrl) {
+  const baseUrl = process.env.API_URL || process.env.APP_URL || 'https://tickets.ayrpavilion.com';
+  return `${baseUrl}/api/track/click/${emailLogId}?url=${encodeURIComponent(targetUrl)}`;
+}
+
+function trackPixel(emailLogId) {
+  const baseUrl = process.env.API_URL || process.env.APP_URL || 'https://tickets.ayrpavilion.com';
+  return `${baseUrl}/api/track/open/${emailLogId}`;
+}
+
+function buildEmailHtml({ eventTitle, dateTime, doorsOpen, venue, ticketTypeName, ticketCode, quantity, orderRef, calendarUrl, emailLogId }) {
   const eventDate = new Date(dateTime);
   const formattedDate = eventDate.toLocaleDateString('en-GB', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric'
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
   });
-  const formattedTime = eventDate.toLocaleTimeString('en-GB', {
-    hour: '2-digit',
-    minute: '2-digit'
-  });
-
+  const formattedTime = eventDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   const doorsText = doorsOpen
     ? new Date(doorsOpen).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
     : null;
 
-  return `
-<!DOCTYPE html>
+  const appUrl = process.env.APP_URL || 'https://tickets.ayrpavilion.com';
+  const viewTicketUrl = `${appUrl}/tickets/${ticketCode}`;
+  const directionsUrl = 'https://maps.google.com/maps?q=Ayr+Pavilion,+30+The+Pavilion,+Low+Green,+Ayr+KA7+1HL';
+
+  // Wrap links through click tracker if we have an emailLogId
+  const trackedCalendarUrl = emailLogId ? trackUrl(emailLogId, calendarUrl) : calendarUrl;
+  const trackedViewUrl = emailLogId ? trackUrl(emailLogId, viewTicketUrl) : viewTicketUrl;
+  const trackedDirectionsUrl = emailLogId ? trackUrl(emailLogId, directionsUrl) : directionsUrl;
+  const pixelTag = emailLogId ? `<img src="${trackPixel(emailLogId)}" width="1" height="1" style="display:none;" alt="">` : '';
+
+  return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -76,15 +88,9 @@ function buildEmailHtml({ eventTitle, dateTime, doorsOpen, venue, ticketTypeName
 
               <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:25px;">
                 <tr>
-                  <td style="padding:12px 15px;background-color:#12122a;border-radius:8px;margin-bottom:8px;">
-                    <table width="100%" cellpadding="0" cellspacing="0">
-                      <tr>
-                        <td style="color:#D4A843;font-size:12px;text-transform:uppercase;letter-spacing:1px;padding-bottom:4px;">Date</td>
-                      </tr>
-                      <tr>
-                        <td style="color:#ffffff;font-size:16px;">${formattedDate}</td>
-                      </tr>
-                    </table>
+                  <td style="padding:12px 15px;background-color:#12122a;border-radius:8px;">
+                    <span style="color:#D4A843;font-size:12px;text-transform:uppercase;letter-spacing:1px;">Date</span><br>
+                    <span style="color:#ffffff;font-size:16px;">${formattedDate}</span>
                   </td>
                 </tr>
                 <tr><td style="height:8px;"></td></tr>
@@ -96,12 +102,10 @@ function buildEmailHtml({ eventTitle, dateTime, doorsOpen, venue, ticketTypeName
                           <span style="color:#D4A843;font-size:12px;text-transform:uppercase;letter-spacing:1px;">Time</span><br>
                           <span style="color:#ffffff;font-size:16px;">${formattedTime}</span>
                         </td>
-                        ${doorsText ? `
-                        <td width="50%">
+                        ${doorsText ? `<td width="50%">
                           <span style="color:#D4A843;font-size:12px;text-transform:uppercase;letter-spacing:1px;">Doors Open</span><br>
                           <span style="color:#ffffff;font-size:16px;">${doorsText}</span>
-                        </td>
-                        ` : ''}
+                        </td>` : ''}
                       </tr>
                     </table>
                   </td>
@@ -146,23 +150,32 @@ function buildEmailHtml({ eventTitle, dateTime, doorsOpen, venue, ticketTypeName
                 </tr>
               </table>
 
-              <!-- Add to Calendar -->
+              <!-- Action Buttons -->
               <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:20px;">
                 <tr>
                   <td align="center">
-                    <a href="${calendarUrl}" target="_blank" style="display:inline-block;padding:14px 30px;background-color:#D4A843;color:#1a1a2e;text-decoration:none;border-radius:8px;font-weight:bold;font-size:14px;text-transform:uppercase;letter-spacing:1px;">
+                    <a href="${trackedCalendarUrl}" target="_blank" style="display:inline-block;padding:14px 30px;background-color:#D4A843;color:#1a1a2e;text-decoration:none;border-radius:8px;font-weight:bold;font-size:14px;text-transform:uppercase;letter-spacing:1px;">
                       Add to Calendar
                     </a>
                   </td>
                 </tr>
               </table>
 
-              <!-- View Ticket Online -->
               <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:15px;">
                 <tr>
                   <td align="center">
-                    <a href="${process.env.APP_URL || 'http://localhost:5173'}/tickets/${ticketCode}" target="_blank" style="display:inline-block;padding:12px 30px;border:1px solid #D4A843;color:#D4A843;text-decoration:none;border-radius:8px;font-size:13px;text-transform:uppercase;letter-spacing:1px;">
+                    <a href="${trackedViewUrl}" target="_blank" style="display:inline-block;padding:12px 30px;border:1px solid #D4A843;color:#D4A843;text-decoration:none;border-radius:8px;font-size:13px;text-transform:uppercase;letter-spacing:1px;">
                       View Ticket Online
+                    </a>
+                  </td>
+                </tr>
+              </table>
+
+              <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:15px;">
+                <tr>
+                  <td align="center">
+                    <a href="${trackedDirectionsUrl}" target="_blank" style="display:inline-block;padding:12px 30px;border:1px solid #555;color:#999;text-decoration:none;border-radius:8px;font-size:13px;text-transform:uppercase;letter-spacing:1px;">
+                      Get Directions
                     </a>
                   </td>
                 </tr>
@@ -175,7 +188,8 @@ function buildEmailHtml({ eventTitle, dateTime, doorsOpen, venue, ticketTypeName
             <td style="padding:25px 30px;background-color:#12122a;border-top:1px solid #2a2a4a;text-align:center;">
               <p style="margin:0 0 8px;color:#666;font-size:12px;">Ayr Pavilion, 30 The Pavilion, Low Green, Ayr KA7 1HL</p>
               <p style="margin:0 0 8px;color:#666;font-size:12px;">Please have your QR code ready at the door for scanning.</p>
-              <p style="margin:0;color:#444;font-size:11px;">This ticket is non-transferable. No refunds unless the event is cancelled.</p>
+              <p style="margin:0 0 8px;color:#555;font-size:11px;">This ticket is non-transferable. No refunds unless the event is cancelled.</p>
+              <p style="margin:0;color:#444;font-size:11px;">By purchasing tickets you agree to the venue's terms and conditions.</p>
             </td>
           </tr>
 
@@ -183,11 +197,35 @@ function buildEmailHtml({ eventTitle, dateTime, doorsOpen, venue, ticketTypeName
       </td>
     </tr>
   </table>
+  ${pixelTag}
 </body>
 </html>`;
 }
 
-async function sendTicketEmail({ to, customerName, eventTitle, dateTime, doorsOpen, venue, ticketTypeName, tickets, orderRef }) {
+/**
+ * Log an email attempt to the database BEFORE sending.
+ * Returns the emailLog id.
+ */
+function logEmail({ ticketId, orderId, recipient, subject }) {
+  const db = getDb();
+  const result = db.prepare(`
+    INSERT INTO email_logs (ticket_id, order_id, recipient, subject, status)
+    VALUES (?, ?, ?, ?, 'queued')
+  `).run(ticketId || null, orderId || null, recipient, subject);
+  return result.lastInsertRowid;
+}
+
+function markEmailSent(emailLogId) {
+  const db = getDb();
+  db.prepare(`UPDATE email_logs SET status = 'sent', sent_at = datetime('now') WHERE id = ?`).run(emailLogId);
+}
+
+function markEmailFailed(emailLogId, error) {
+  const db = getDb();
+  db.prepare(`UPDATE email_logs SET status = 'failed', error = ? WHERE id = ?`).run(String(error).slice(0, 500), emailLogId);
+}
+
+async function sendTicketEmail({ to, customerName, eventTitle, dateTime, doorsOpen, venue, ticketTypeName, tickets, orderRef, orderId }) {
   const transporter = createTransporter();
 
   const calendarUrl = buildGoogleCalendarUrl({
@@ -198,25 +236,36 @@ async function sendTicketEmail({ to, customerName, eventTitle, dateTime, doorsOp
   });
 
   for (const ticket of tickets) {
-    const qrBuffer = await generateQrBuffer(ticket.code);
+    const subject = `Your Tickets: ${eventTitle} - ${venue}`;
 
-    const html = buildEmailHtml({
-      eventTitle,
-      dateTime,
-      doorsOpen,
-      venue,
-      ticketTypeName: ticket.ticketTypeName || ticketTypeName,
-      ticketCode: ticket.code,
-      quantity: tickets.length,
-      orderRef,
-      calendarUrl
+    // Log BEFORE sending
+    const emailLogId = logEmail({
+      ticketId: ticket.id || null,
+      orderId: orderId || null,
+      recipient: to,
+      subject
     });
 
     try {
+      const qrBuffer = await generateQrBuffer(ticket.code);
+
+      const html = buildEmailHtml({
+        eventTitle,
+        dateTime,
+        doorsOpen,
+        venue,
+        ticketTypeName: ticket.ticketTypeName || ticketTypeName,
+        ticketCode: ticket.code,
+        quantity: tickets.length,
+        orderRef,
+        calendarUrl,
+        emailLogId
+      });
+
       await transporter.sendMail({
-        from: process.env.SMTP_FROM || 'Ayr Pavilion <tickets@ayrpavilion.com>',
+        from: process.env.SMTP_FROM || 'Ayr Pavilion <no-reply@ayrpavilion.com>',
         to,
-        subject: `Your Tickets: ${eventTitle} - ${venue}`,
+        subject,
         html,
         attachments: [
           {
@@ -226,10 +275,120 @@ async function sendTicketEmail({ to, customerName, eventTitle, dateTime, doorsOp
           }
         ]
       });
+
+      markEmailSent(emailLogId);
     } catch (err) {
       console.error(`Failed to send ticket email to ${to} for ticket ${ticket.code}:`, err.message);
+      markEmailFailed(emailLogId, err.message);
     }
   }
 }
 
-module.exports = { sendTicketEmail, buildGoogleCalendarUrl };
+/**
+ * Resend a specific email by its log ID.
+ * Looks up the original ticket/order data and re-sends.
+ */
+async function resendEmail(emailLogId) {
+  const db = getDb();
+  const log = db.prepare('SELECT * FROM email_logs WHERE id = ?').get(emailLogId);
+  if (!log) throw new Error('Email log not found');
+
+  const ticket = log.ticket_id ? db.prepare(`
+    SELECT t.*, tt.name as ticket_type_name, e.title as event_title, e.date_time, e.doors_open, e.venue,
+           o.order_ref, o.customer_name, o.customer_email
+    FROM tickets t
+    JOIN ticket_types tt ON t.ticket_type_id = tt.id
+    JOIN events e ON t.event_id = e.id
+    JOIN orders o ON t.order_id = o.id
+    WHERE t.id = ?
+  `).get(log.ticket_id) : null;
+
+  if (!ticket) {
+    // Fallback: try to find via order_id
+    const order = log.order_id ? db.prepare(`
+      SELECT o.*, e.title as event_title, e.date_time, e.doors_open, e.venue
+      FROM orders o
+      JOIN events e ON o.event_id = e.id
+      WHERE o.id = ?
+    `).get(log.order_id) : null;
+
+    if (!order) throw new Error('Cannot find original ticket/order data to resend');
+
+    const tickets = db.prepare(`
+      SELECT t.*, tt.name as ticketTypeName
+      FROM tickets t
+      JOIN ticket_types tt ON t.ticket_type_id = tt.id
+      WHERE t.order_id = ?
+    `).all(order.id);
+
+    // Re-queue: update status
+    db.prepare(`UPDATE email_logs SET status = 'queued', error = NULL WHERE id = ?`).run(emailLogId);
+
+    await sendTicketEmail({
+      to: log.recipient,
+      customerName: order.customer_name,
+      eventTitle: order.event_title,
+      dateTime: order.date_time,
+      doorsOpen: order.doors_open,
+      venue: order.venue,
+      ticketTypeName: tickets[0]?.ticketTypeName || 'General',
+      tickets,
+      orderRef: order.order_ref,
+      orderId: order.id
+    });
+    return;
+  }
+
+  // Re-queue
+  db.prepare(`UPDATE email_logs SET status = 'queued', error = NULL WHERE id = ?`).run(emailLogId);
+
+  const calendarUrl = buildGoogleCalendarUrl({
+    title: ticket.event_title,
+    dateTime: ticket.date_time,
+    venue: ticket.venue,
+    description: `Your tickets for ${ticket.event_title} at ${ticket.venue}. Order ref: ${ticket.order_ref}`
+  });
+
+  const transporter = createTransporter();
+  const qrBuffer = await generateQrBuffer(ticket.code);
+
+  // Create a NEW log entry for the resend
+  const newLogId = logEmail({
+    ticketId: ticket.id,
+    orderId: log.order_id,
+    recipient: log.recipient,
+    subject: log.subject
+  });
+
+  try {
+    const html = buildEmailHtml({
+      eventTitle: ticket.event_title,
+      dateTime: ticket.date_time,
+      doorsOpen: ticket.doors_open,
+      venue: ticket.venue,
+      ticketTypeName: ticket.ticket_type_name,
+      ticketCode: ticket.code,
+      quantity: 1,
+      orderRef: ticket.order_ref,
+      calendarUrl,
+      emailLogId: newLogId
+    });
+
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || 'Ayr Pavilion <no-reply@ayrpavilion.com>',
+      to: log.recipient,
+      subject: log.subject,
+      html,
+      attachments: [{ filename: 'qrcode.png', content: qrBuffer, cid: 'qrcode' }]
+    });
+
+    markEmailSent(newLogId);
+    // Mark original as resent
+    db.prepare(`UPDATE email_logs SET status = 'resent' WHERE id = ?`).run(emailLogId);
+  } catch (err) {
+    markEmailFailed(newLogId, err.message);
+    throw err;
+  }
+}
+
+module.exports = { sendTicketEmail, resendEmail, buildGoogleCalendarUrl };

@@ -201,7 +201,8 @@ router.post('/webhook', async (req, res) => {
             venue: eventData.venue,
             ticketTypeName: orderItems[0].ticketTypeName,
             tickets,
-            orderRef
+            orderRef,
+            orderId: order.id
           }).catch(err => {
             console.error('Failed to send ticket email:', err.message);
           });
