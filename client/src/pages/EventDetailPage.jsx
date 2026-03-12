@@ -504,6 +504,34 @@ export default function EventDetailPage() {
     setCheckoutError(null);
     setCheckoutLoading(true);
 
+    // Validate adult supervision rule
+    if (event.require_adult_supervision) {
+      const maxChildAge = event.supervision_child_max_age || 12;
+      let adultCount = 0;
+      let childCount = 0;
+      for (const tt of ticketTypes) {
+        const qty = quantities[tt.id] || 0;
+        if (qty === 0) continue;
+        if (tt.age_max && tt.age_max <= maxChildAge) {
+          childCount += qty;
+        } else {
+          adultCount += qty;
+        }
+      }
+      if (childCount > 0 && adultCount < 1) {
+        setCheckoutError(`Children under ${maxChildAge} must be accompanied by at least one adult. Please add an adult ticket.`);
+        setCheckoutLoading(false);
+        return;
+      }
+      const ratio = (event.supervision_ratio || '1:1').split(':').map(Number);
+      const requiredAdults = Math.ceil(childCount * (ratio[0] / ratio[1]));
+      if (adultCount < requiredAdults) {
+        setCheckoutError(`At least ${requiredAdults} adult ticket(s) required for ${childCount} child ticket(s).`);
+        setCheckoutLoading(false);
+        return;
+      }
+    }
+
     // Validate required addons
     for (const addon of relevantAddons) {
       if (!addon.required) continue;
@@ -727,6 +755,15 @@ export default function EventDetailPage() {
             {/* Ticket selection */}
             <div>
               <h2 className="text-xl font-bold mb-4">Tickets</h2>
+              {event.require_adult_supervision && (
+                <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 mb-4 flex items-start gap-2">
+                  <AlertCircle className="w-5 h-5 text-amber-400 mt-0.5 flex-shrink-0" />
+                  <p className="text-amber-200 text-sm">
+                    Children under {event.supervision_child_max_age || 12} must be accompanied by at least one adult.
+                    A minimum of 1 adult ticket is required per child ticket.
+                  </p>
+                </div>
+              )}
               <div className="space-y-3">
                 {ticketTypes.length === 0 && (
                   <p className="text-gray-500">No tickets available yet.</p>

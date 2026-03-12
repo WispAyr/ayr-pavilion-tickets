@@ -34,6 +34,38 @@ router.post('/checkout', async (req, res) => {
       return res.status(400).json({ error: 'Event is not currently on sale' });
     }
 
+    // Validate adult supervision rule
+    if (event.require_adult_supervision) {
+      const maxChildAge = event.supervision_child_max_age || 12;
+      let adultCount = 0;
+      let childCount = 0;
+
+      for (const item of items) {
+        const tt = db.prepare('SELECT * FROM ticket_types WHERE id = ? AND event_id = ?').get(item.ticketTypeId, eventId);
+        if (!tt) continue;
+        if (tt.age_max && tt.age_max <= maxChildAge) {
+          childCount += item.quantity;
+        } else {
+          adultCount += item.quantity;
+        }
+      }
+
+      if (childCount > 0 && adultCount < 1) {
+        return res.status(400).json({
+          error: `Children under ${maxChildAge} must be accompanied by at least one adult. Please add an adult ticket.`
+        });
+      }
+
+      // Parse ratio (e.g. "1:1" = 1 adult per 1 child)
+      const ratio = (event.supervision_ratio || '1:1').split(':').map(Number);
+      const requiredAdults = Math.ceil(childCount * (ratio[0] / ratio[1]));
+      if (adultCount < requiredAdults) {
+        return res.status(400).json({
+          error: `At least ${requiredAdults} adult ticket(s) required for ${childCount} child ticket(s) (${event.supervision_ratio} adult-to-child ratio).`
+        });
+      }
+    }
+
     // Validate ticket types and availability
     let totalPence = 0;
     const lineItems = [];

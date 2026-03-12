@@ -30,6 +30,9 @@ function initialize() {
       capacity INTEGER,
       status TEXT DEFAULT 'draft' CHECK(status IN ('draft','on-sale','sold-out','completed','cancelled')),
       age_restriction TEXT,
+      require_adult_supervision INTEGER DEFAULT 0,
+      supervision_child_max_age INTEGER DEFAULT 12,
+      supervision_ratio TEXT DEFAULT '1:1',
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );
