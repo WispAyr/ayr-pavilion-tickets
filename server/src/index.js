@@ -61,6 +61,9 @@ if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
 
+// Static file serving for uploads
+app.use('/uploads', express.static(path.join(__dirname, '../data/uploads')));
+
 // Routes
 const eventsRoutes = require('./routes/events');
 const ticketTypesRoutes = require('./routes/ticket-types');
@@ -71,6 +74,7 @@ const addonsRoutes = require('./routes/addons');
 const waiversRoutes = require('./routes/waivers');
 
 const trackingRoutes = require('./routes/tracking');
+const socialRoutes = require('./routes/social');
 
 app.use('/api/track', trackingRoutes);
 app.use('/api/events', eventsRoutes);
@@ -82,6 +86,7 @@ app.use('/api/scan', scanRoutes);
 app.use('/api/admin/login', authLimiter);
 app.use('/api/admin', adminRoutes);
 app.use('/api/stripe', stripeRoutes);
+app.use('/api', socialRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

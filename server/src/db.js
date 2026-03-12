@@ -194,6 +194,15 @@ function initialize() {
       ip_address TEXT,
       user_agent TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS social_posts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id INTEGER NOT NULL REFERENCES events(id),
+      platform TEXT NOT NULL,
+      template TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
   `);
 
   // Add age range columns to ticket_types (safe to run multiple times)

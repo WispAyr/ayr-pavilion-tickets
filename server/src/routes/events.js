@@ -1,7 +1,35 @@
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
+const sharp = require('sharp');
+const path = require('path');
+const fs = require('fs');
 const { getDb } = require('../db');
 const { adminAuth } = require('../middleware/auth');
+
+const uploadDir = path.resolve(__dirname, '../../data/uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadDir),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, `event-${Date.now()}${ext}`);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.includes(ext)) cb(null, true);
+    else cb(new Error('Only jpg, png, webp, gif allowed'));
+  }
+});
 
 function slugify(text) {
   return text
@@ -183,6 +211,32 @@ router.put('/:id', adminAuth, (req, res) => {
   } catch (err) {
     console.error('Error updating event:', err);
     res.status(500).json({ error: 'Failed to update event' });
+  }
+});
+
+// POST /api/events/:id/image - upload hero image
+router.post('/:id/image', adminAuth, upload.single('image'), async (req, res) => {
+  try {
+    const db = getDb();
+    const event = db.prepare('SELECT * FROM events WHERE id = ?').get(req.params.id);
+    if (!event) return res.status(404).json({ error: 'Event not found' });
+    if (!req.file) return res.status(400).json({ error: 'No image uploaded' });
+
+    // Generate thumbnail
+    const thumbName = `thumb-${req.file.filename}`;
+    const thumbPath = path.join(uploadDir, thumbName);
+    await sharp(req.file.path).resize(400).toFile(thumbPath);
+
+    const imageUrl = `/uploads/${req.file.filename}`;
+    const thumbUrl = `/uploads/${thumbName}`;
+
+    db.prepare('UPDATE events SET hero_image = ?, updated_at = datetime(\'now\') WHERE id = ?')
+      .run(imageUrl, req.params.id);
+
+    res.json({ imageUrl, thumbUrl });
+  } catch (err) {
+    console.error('Image upload error:', err);
+    res.status(500).json({ error: 'Failed to upload image' });
   }
 });
 

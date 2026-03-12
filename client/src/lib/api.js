@@ -271,3 +271,29 @@ export function refundOrder(id) {
     method: 'POST',
   });
 }
+
+// ─── Image Upload ────────────────────────────────────────────
+export function uploadEventImage(eventId, file) {
+  const formData = new FormData();
+  formData.append('image', file);
+  const token = localStorage.getItem('admin_token');
+  return fetch(`${BASE_URL}/events/${eventId}/image`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  }).then(async (res) => {
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || 'Upload failed');
+    }
+    return res.json();
+  });
+}
+
+// ─── Social Posts ────────────────────────────────────────────
+export function generateSocialPost(eventId, data) {
+  return authRequest(`/events/${eventId}/social-post`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
