@@ -172,7 +172,21 @@ router.get('/orders/:id', adminAuth, (req, res) => {
       ORDER BY t.created_at ASC
     `).all(order.id);
 
-    res.json({ ...order, tickets });
+    const addon_selections = db.prepare(`
+      SELECT oas.*, a.name as addon_name, a.type as addon_type
+      FROM order_addon_selections oas
+      JOIN addons a ON oas.addon_id = a.id
+      WHERE oas.order_id = ?
+    `).all(order.id);
+
+    const waiver_acceptances = db.prepare(`
+      SELECT wa.*, w.name as waiver_name
+      FROM waiver_acceptances wa
+      JOIN waivers w ON wa.waiver_id = w.id
+      WHERE wa.order_id = ?
+    `).all(order.id);
+
+    res.json({ ...order, tickets, addon_selections, waiver_acceptances });
   } catch (err) {
     console.error('Error fetching order:', err);
     res.status(500).json({ error: 'Failed to fetch order' });

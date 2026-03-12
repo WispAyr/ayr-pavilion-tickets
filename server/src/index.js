@@ -67,12 +67,16 @@ const ticketTypesRoutes = require('./routes/ticket-types');
 const ticketsRoutes = require('./routes/tickets');
 const scanRoutes = require('./routes/scan');
 const adminRoutes = require('./routes/admin');
+const addonsRoutes = require('./routes/addons');
+const waiversRoutes = require('./routes/waivers');
 
 const trackingRoutes = require('./routes/tracking');
 
 app.use('/api/track', trackingRoutes);
 app.use('/api/events', eventsRoutes);
 app.use('/api', ticketTypesRoutes);
+app.use('/api', addonsRoutes);
+app.use('/api', waiversRoutes);
 app.use('/api/tickets', ticketsRoutes);
 app.use('/api/scan', scanRoutes);
 app.use('/api/admin/login', authLimiter);

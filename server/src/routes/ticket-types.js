@@ -36,15 +36,15 @@ router.post('/events/:eventId/ticket-types', adminAuth, (req, res) => {
       return res.status(404).json({ error: 'Event not found' });
     }
 
-    const { name, price, quantity, description, sale_start, sale_end, sort_order } = req.body;
+    const { name, price, quantity, description, sale_start, sale_end, sort_order, age_min, age_max, age_label } = req.body;
 
     if (!name || price === undefined || !quantity) {
       return res.status(400).json({ error: 'Name, price, and quantity are required' });
     }
 
     const result = db.prepare(`
-      INSERT INTO ticket_types (event_id, name, price, quantity, description, sale_start, sale_end, sort_order)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO ticket_types (event_id, name, price, quantity, description, sale_start, sale_end, sort_order, age_min, age_max, age_label)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       eventId,
       name,
@@ -53,7 +53,10 @@ router.post('/events/:eventId/ticket-types', adminAuth, (req, res) => {
       description || null,
       sale_start || null,
       sale_end || null,
-      sort_order || 0
+      sort_order || 0,
+      age_min || null,
+      age_max || null,
+      age_label || null
     );
 
     const ticketType = db.prepare('SELECT * FROM ticket_types WHERE id = ?').get(result.lastInsertRowid);
@@ -74,12 +77,13 @@ router.put('/ticket-types/:id', adminAuth, (req, res) => {
       return res.status(404).json({ error: 'Ticket type not found' });
     }
 
-    const { name, price, quantity, description, sale_start, sale_end, sort_order } = req.body;
+    const { name, price, quantity, description, sale_start, sale_end, sort_order, age_min, age_max, age_label } = req.body;
 
     db.prepare(`
       UPDATE ticket_types SET
         name = ?, price = ?, quantity = ?, description = ?,
-        sale_start = ?, sale_end = ?, sort_order = ?
+        sale_start = ?, sale_end = ?, sort_order = ?,
+        age_min = ?, age_max = ?, age_label = ?
       WHERE id = ?
     `).run(
       name || ticketType.name,
@@ -89,6 +93,9 @@ router.put('/ticket-types/:id', adminAuth, (req, res) => {
       sale_start !== undefined ? sale_start : ticketType.sale_start,
       sale_end !== undefined ? sale_end : ticketType.sale_end,
       sort_order !== undefined ? sort_order : ticketType.sort_order,
+      age_min !== undefined ? age_min : ticketType.age_min,
+      age_max !== undefined ? age_max : ticketType.age_max,
+      age_label !== undefined ? age_label : ticketType.age_label,
       req.params.id
     );
 

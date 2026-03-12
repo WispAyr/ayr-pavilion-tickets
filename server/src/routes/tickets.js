@@ -27,6 +27,15 @@ router.get('/:code', (req, res) => {
       return res.status(404).json({ error: 'Ticket not found' });
     }
 
+    // Fetch addon selections for this ticket
+    const addonSelections = db.prepare(`
+      SELECT oas.*, a.name as addon_name, a.type as addon_type
+      FROM order_addon_selections oas
+      JOIN addons a ON oas.addon_id = a.id
+      WHERE oas.ticket_id = (SELECT id FROM tickets WHERE code = ?)
+         OR (oas.order_id = (SELECT order_id FROM tickets WHERE code = ?) AND oas.ticket_id IS NULL)
+    `).all(code, code);
+
     res.json({
       code: ticket.code,
       status: ticket.status,
@@ -45,7 +54,8 @@ router.get('/:code', (req, res) => {
       ticket_type: {
         name: ticket.ticket_type_name,
         price: ticket.ticket_price
-      }
+      },
+      addon_selections: addonSelections
     });
   } catch (err) {
     console.error('Error fetching ticket:', err);

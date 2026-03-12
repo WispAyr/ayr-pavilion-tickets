@@ -69,6 +69,8 @@ function normalizeEvent(ev) {
       saleStart: tt.saleStart,
       saleEnd: tt.saleEnd,
     })),
+    addons: ev.addons || [],
+    waivers: ev.waivers || [],
   };
 }
 
@@ -129,6 +131,60 @@ export function updateTicketType(id, data) {
 
 export function deleteTicketType(id) {
   return authRequest(`/ticket-types/${id}`, {
+    method: 'DELETE',
+  });
+}
+
+// ─── Addons ────────────────────────────────────────────────
+export function fetchAddons(eventId) {
+  return request(`/events/${eventId}/addons`);
+}
+
+export function createAddon(eventId, data) {
+  return authRequest(`/events/${eventId}/addons`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateAddon(id, data) {
+  return authRequest(`/addons/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteAddon(id) {
+  return authRequest(`/addons/${id}`, {
+    method: 'DELETE',
+  });
+}
+
+// ─── Waivers ───────────────────────────────────────────────
+export function fetchWaivers(eventId) {
+  return request(`/events/${eventId}/waivers`);
+}
+
+export function fetchWaiverTemplates() {
+  return authRequest('/waiver-templates');
+}
+
+export function createWaiver(eventId, data) {
+  return authRequest(`/events/${eventId}/waivers`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateWaiver(id, data) {
+  return authRequest(`/waivers/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteWaiver(id) {
+  return authRequest(`/waivers/${id}`, {
     method: 'DELETE',
   });
 }

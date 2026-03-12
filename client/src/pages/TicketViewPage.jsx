@@ -177,6 +177,21 @@ export default function TicketViewPage() {
               )}
             </div>
 
+            {/* Addon selections */}
+            {ticket.addonSelections && ticket.addonSelections.length > 0 && (
+              <div className="border-t border-pavilion-600/50 pt-4 space-y-2">
+                <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Add-ons</p>
+                {ticket.addonSelections.map((sel, i) => (
+                  <div key={i} className="flex justify-between text-sm">
+                    <span className="text-gray-400">{sel.addonName}</span>
+                    <span className="text-white font-medium">
+                      {sel.selectedOption || (sel.quantity > 1 ? `x${sel.quantity}` : 'Yes')}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {/* QR Code */}
             <div className="border-t border-pavilion-600/50 pt-6 text-center">
               <div className="inline-block bg-white rounded-xl p-4">

@@ -118,7 +118,92 @@ function initialize() {
       error TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
+
+    -- Addons
+    CREATE TABLE IF NOT EXISTS addons (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT,
+      price INTEGER NOT NULL,
+      type TEXT DEFAULT 'select' CHECK(type IN ('select','checkbox','quantity')),
+      max_quantity INTEGER DEFAULT 1,
+      required INTEGER DEFAULT 0,
+      per_ticket INTEGER DEFAULT 1,
+      sort_order INTEGER DEFAULT 0,
+      active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS addon_options (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      addon_id INTEGER NOT NULL REFERENCES addons(id) ON DELETE CASCADE,
+      label TEXT NOT NULL,
+      stock INTEGER DEFAULT 0,
+      reserved INTEGER DEFAULT 0,
+      price_override INTEGER,
+      sort_order INTEGER DEFAULT 0,
+      active INTEGER DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS addon_ticket_types (
+      addon_id INTEGER NOT NULL REFERENCES addons(id) ON DELETE CASCADE,
+      ticket_type_id INTEGER NOT NULL REFERENCES ticket_types(id) ON DELETE CASCADE,
+      PRIMARY KEY (addon_id, ticket_type_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS order_addon_selections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      ticket_id INTEGER REFERENCES tickets(id),
+      addon_id INTEGER NOT NULL REFERENCES addons(id),
+      addon_option_id INTEGER REFERENCES addon_options(id),
+      selected_option TEXT,
+      quantity INTEGER DEFAULT 1,
+      price INTEGER NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Waivers
+    CREATE TABLE IF NOT EXISTS waivers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id INTEGER REFERENCES events(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      type TEXT DEFAULT 'checkbox' CHECK(type IN ('checkbox','signature','scroll-agree')),
+      content TEXT NOT NULL,
+      required INTEGER DEFAULT 1,
+      sort_order INTEGER DEFAULT 0,
+      active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS waiver_ticket_types (
+      waiver_id INTEGER NOT NULL REFERENCES waivers(id) ON DELETE CASCADE,
+      ticket_type_id INTEGER NOT NULL REFERENCES ticket_types(id) ON DELETE CASCADE,
+      PRIMARY KEY (waiver_id, ticket_type_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS waiver_acceptances (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL REFERENCES orders(id),
+      waiver_id INTEGER NOT NULL REFERENCES waivers(id),
+      accepted_at TEXT DEFAULT (datetime('now')),
+      ip_address TEXT,
+      user_agent TEXT
+    );
   `);
+
+  // Add age range columns to ticket_types (safe to run multiple times)
+  const ticketTypeCols = db.prepare("PRAGMA table_info(ticket_types)").all().map(c => c.name);
+  if (!ticketTypeCols.includes('age_min')) {
+    db.exec('ALTER TABLE ticket_types ADD COLUMN age_min INTEGER');
+  }
+  if (!ticketTypeCols.includes('age_max')) {
+    db.exec('ALTER TABLE ticket_types ADD COLUMN age_max INTEGER');
+  }
+  if (!ticketTypeCols.includes('age_label')) {
+    db.exec('ALTER TABLE ticket_types ADD COLUMN age_label TEXT');
+  }
 
   console.log('Database initialized successfully');
   return db;

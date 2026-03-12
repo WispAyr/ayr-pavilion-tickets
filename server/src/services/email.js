@@ -40,7 +40,7 @@ function trackPixel(emailLogId) {
   return `${baseUrl}/api/track/open/${emailLogId}`;
 }
 
-function buildEmailHtml({ eventTitle, dateTime, doorsOpen, venue, ticketTypeName, ticketCode, quantity, orderRef, calendarUrl, emailLogId }) {
+function buildEmailHtml({ eventTitle, dateTime, doorsOpen, venue, ticketTypeName, ticketCode, quantity, orderRef, calendarUrl, emailLogId, addonDetails }) {
   const eventDate = new Date(dateTime);
   const formattedDate = eventDate.toLocaleDateString('en-GB', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
@@ -140,6 +140,17 @@ function buildEmailHtml({ eventTitle, dateTime, doorsOpen, venue, ticketTypeName
                 </tr>
               </table>
 
+              ${addonDetails && addonDetails.length > 0 ? `
+              <!-- Addon Details -->
+              <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:15px;">
+                <tr>
+                  <td style="padding:12px 15px;background-color:#12122a;border-radius:8px;">
+                    <span style="color:#D4A843;font-size:12px;text-transform:uppercase;letter-spacing:1px;">Add-ons</span><br>
+                    ${addonDetails.map(a => `<span style="color:#ffffff;font-size:14px;">${a.name}${a.option ? ': ' + a.option : ''}${a.quantity > 1 ? ' x' + a.quantity : ''}</span>`).join('<br>')}
+                  </td>
+                </tr>
+              </table>` : ''}
+
               <!-- Order Reference -->
               <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:20px;">
                 <tr>
@@ -227,6 +238,7 @@ function markEmailFailed(emailLogId, error) {
 
 async function sendTicketEmail({ to, customerName, eventTitle, dateTime, doorsOpen, venue, ticketTypeName, tickets, orderRef, orderId }) {
   const transporter = createTransporter();
+  const db = getDb();
 
   const calendarUrl = buildGoogleCalendarUrl({
     title: eventTitle,
@@ -234,6 +246,22 @@ async function sendTicketEmail({ to, customerName, eventTitle, dateTime, doorsOp
     venue,
     description: `Your tickets for ${eventTitle} at ${venue}. Order ref: ${orderRef}`
   });
+
+  // Fetch addon selections for the order
+  let orderAddonDetails = [];
+  if (orderId) {
+    const addonSels = db.prepare(`
+      SELECT oas.*, a.name as addon_name
+      FROM order_addon_selections oas
+      JOIN addons a ON oas.addon_id = a.id
+      WHERE oas.order_id = ?
+    `).all(orderId);
+    orderAddonDetails = addonSels.map(s => ({
+      name: s.addon_name,
+      option: s.selected_option,
+      quantity: s.quantity
+    }));
+  }
 
   for (const ticket of tickets) {
     const subject = `Your Tickets: ${eventTitle} - ${venue}`;
@@ -259,7 +287,8 @@ async function sendTicketEmail({ to, customerName, eventTitle, dateTime, doorsOp
         quantity: tickets.length,
         orderRef,
         calendarUrl,
-        emailLogId
+        emailLogId,
+        addonDetails: orderAddonDetails
       });
 
       await transporter.sendMail({

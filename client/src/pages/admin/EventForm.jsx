@@ -7,6 +7,8 @@ import {
   Plus,
   Trash2,
   ChevronLeft,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import {
   fetchEvent,
@@ -16,6 +18,15 @@ import {
   createTicketType,
   updateTicketType,
   deleteTicketType,
+  fetchAddons,
+  createAddon,
+  updateAddon,
+  deleteAddon,
+  fetchWaivers,
+  fetchWaiverTemplates,
+  createWaiver,
+  updateWaiver,
+  deleteWaiver,
 } from '../../lib/api';
 
 function slugify(str) {
@@ -44,6 +55,40 @@ const emptyTicketType = () => ({
   description: '',
   saleStart: '',
   saleEnd: '',
+  ageMin: '',
+  ageMax: '',
+  ageLabel: '',
+});
+
+const emptyAddon = () => ({
+  _key: Math.random().toString(36).slice(2),
+  id: null,
+  name: '',
+  description: '',
+  price: '',
+  type: 'select',
+  maxQuantity: 1,
+  required: false,
+  perTicket: true,
+  ticketTypeIds: [],
+  options: [],
+});
+
+const emptyAddonOption = () => ({
+  _key: Math.random().toString(36).slice(2),
+  label: '',
+  stock: '',
+  priceOverride: '',
+});
+
+const emptyWaiver = () => ({
+  _key: Math.random().toString(36).slice(2),
+  id: null,
+  name: '',
+  type: 'checkbox',
+  content: '',
+  required: true,
+  ticketTypeIds: [],
 });
 
 export default function EventForm() {
@@ -69,17 +114,29 @@ export default function EventForm() {
   });
 
   const [ticketTypes, setTicketTypes] = useState([emptyTicketType()]);
+  const [addons, setAddons] = useState([]);
+  const [waivers, setWaivers] = useState([]);
+  const [waiverTemplates, setWaiverTemplates] = useState([]);
   const [slugManual, setSlugManual] = useState(false);
 
+  // Collapsible sections
+  const [expandedAddon, setExpandedAddon] = useState(null);
+  const [expandedWaiver, setExpandedWaiver] = useState(null);
+
   useEffect(() => {
+    // Load waiver templates
+    fetchWaiverTemplates().then(setWaiverTemplates).catch(() => {});
+
     if (!isEdit) return;
     setLoading(true);
 
     Promise.all([
       fetchEvent(id).catch(() => null),
       fetchTicketTypes(id).catch(() => []),
+      fetchAddons(id).catch(() => []),
+      fetchWaivers(id).catch(() => []),
     ])
-      .then(([ev, ttData]) => {
+      .then(([ev, ttData, addonData, waiverData]) => {
         if (ev) {
           setForm({
             title: ev.title || '',
@@ -108,8 +165,45 @@ export default function EventForm() {
               description: tt.description || '',
               saleStart: toLocalDatetime(tt.saleStart),
               saleEnd: toLocalDatetime(tt.saleEnd),
+              ageMin: tt.ageMin || '',
+              ageMax: tt.ageMax || '',
+              ageLabel: tt.ageLabel || '',
             }))
           );
+        }
+
+        if (Array.isArray(addonData) && addonData.length > 0) {
+          setAddons(addonData.map(a => ({
+            _key: a.id || Math.random().toString(36).slice(2),
+            id: a.id,
+            name: a.name || '',
+            description: a.description || '',
+            price: a.price != null ? (a.price / 100).toFixed(2) : '',
+            type: a.type || 'select',
+            maxQuantity: a.maxQuantity || 1,
+            required: !!a.required,
+            perTicket: a.perTicket !== undefined ? !!a.perTicket : true,
+            ticketTypeIds: a.ticketTypeIds || [],
+            options: (a.options || []).map(o => ({
+              _key: o.id || Math.random().toString(36).slice(2),
+              id: o.id,
+              label: o.label || '',
+              stock: o.stock || '',
+              priceOverride: o.priceOverride != null ? (o.priceOverride / 100).toFixed(2) : '',
+            })),
+          })));
+        }
+
+        if (Array.isArray(waiverData) && waiverData.length > 0) {
+          setWaivers(waiverData.map(w => ({
+            _key: w.id || Math.random().toString(36).slice(2),
+            id: w.id,
+            name: w.name || '',
+            type: w.type || 'checkbox',
+            content: w.content || '',
+            required: w.required !== undefined ? !!w.required : true,
+            ticketTypeIds: w.ticketTypeIds || [],
+          })));
         }
       })
       .catch((err) => setError(err.message))
@@ -141,6 +235,64 @@ export default function EventForm() {
       if (prev.length <= 1) return prev;
       return prev.filter((_, i) => i !== index);
     });
+  }
+
+  // Addon handlers
+  function handleAddonChange(index, field, value) {
+    setAddons(prev => prev.map((a, i) => (i === index ? { ...a, [field]: value } : a)));
+  }
+
+  function addAddonFn() {
+    const newAddon = emptyAddon();
+    setAddons(prev => [...prev, newAddon]);
+    setExpandedAddon(addons.length);
+  }
+
+  function removeAddonFn(index) {
+    setAddons(prev => prev.filter((_, i) => i !== index));
+  }
+
+  function handleAddonOptionChange(addonIndex, optIndex, field, value) {
+    setAddons(prev => prev.map((a, i) => {
+      if (i !== addonIndex) return a;
+      const options = a.options.map((o, j) => (j === optIndex ? { ...o, [field]: value } : o));
+      return { ...a, options };
+    }));
+  }
+
+  function addAddonOption(addonIndex) {
+    setAddons(prev => prev.map((a, i) => {
+      if (i !== addonIndex) return a;
+      return { ...a, options: [...a.options, emptyAddonOption()] };
+    }));
+  }
+
+  function removeAddonOption(addonIndex, optIndex) {
+    setAddons(prev => prev.map((a, i) => {
+      if (i !== addonIndex) return a;
+      return { ...a, options: a.options.filter((_, j) => j !== optIndex) };
+    }));
+  }
+
+  // Waiver handlers
+  function handleWaiverChange(index, field, value) {
+    setWaivers(prev => prev.map((w, i) => (i === index ? { ...w, [field]: value } : w)));
+  }
+
+  function addWaiverFn() {
+    const newWaiver = emptyWaiver();
+    setWaivers(prev => [...prev, newWaiver]);
+    setExpandedWaiver(waivers.length);
+  }
+
+  function removeWaiverFn(index) {
+    setWaivers(prev => prev.filter((_, i) => i !== index));
+  }
+
+  function loadWaiverTemplate(index, templateIndex) {
+    const tpl = waiverTemplates[templateIndex];
+    if (!tpl) return;
+    setWaivers(prev => prev.map((w, i) => (i === index ? { ...w, name: tpl.name, content: tpl.content } : w)));
   }
 
   async function handleSubmit(e) {
@@ -182,12 +334,82 @@ export default function EventForm() {
           description: tt.description || '',
           sale_start: tt.saleStart ? new Date(tt.saleStart).toISOString() : null,
           sale_end: tt.saleEnd ? new Date(tt.saleEnd).toISOString() : null,
+          age_min: tt.ageMin ? parseInt(tt.ageMin, 10) : null,
+          age_max: tt.ageMax ? parseInt(tt.ageMax, 10) : null,
+          age_label: tt.ageLabel || null,
         };
 
         if (tt.id) {
           await updateTicketType(tt.id, ttData);
         } else {
           await createTicketType(eventId, ttData);
+        }
+      }
+
+      // Save addons
+      // Delete removed addons
+      if (isEdit) {
+        const existingAddons = await fetchAddons(eventId).catch(() => []);
+        const currentIds = addons.filter(a => a.id).map(a => a.id);
+        for (const existing of (existingAddons || [])) {
+          if (!currentIds.includes(existing.id)) {
+            await deleteAddon(existing.id);
+          }
+        }
+      }
+
+      for (const addon of addons) {
+        if (!addon.name) continue;
+
+        const addonData = {
+          name: addon.name,
+          description: addon.description || '',
+          price: Math.round(parseFloat(addon.price || 0) * 100),
+          type: addon.type,
+          max_quantity: parseInt(addon.maxQuantity, 10) || 1,
+          required: addon.required,
+          per_ticket: addon.perTicket,
+          ticket_type_ids: addon.ticketTypeIds || [],
+          options: (addon.options || []).filter(o => o.label).map(o => ({
+            label: o.label,
+            stock: parseInt(o.stock, 10) || 0,
+            price_override: o.priceOverride ? Math.round(parseFloat(o.priceOverride) * 100) : null,
+          })),
+        };
+
+        if (addon.id) {
+          await updateAddon(addon.id, addonData);
+        } else {
+          await createAddon(eventId, addonData);
+        }
+      }
+
+      // Save waivers
+      if (isEdit) {
+        const existingWaivers = await fetchWaivers(eventId).catch(() => []);
+        const currentIds = waivers.filter(w => w.id).map(w => w.id);
+        for (const existing of (existingWaivers || [])) {
+          if (!currentIds.includes(existing.id)) {
+            await deleteWaiver(existing.id);
+          }
+        }
+      }
+
+      for (const waiver of waivers) {
+        if (!waiver.name || !waiver.content) continue;
+
+        const waiverData = {
+          name: waiver.name,
+          type: waiver.type,
+          content: waiver.content,
+          required: waiver.required,
+          ticket_type_ids: waiver.ticketTypeIds || [],
+        };
+
+        if (waiver.id) {
+          await updateWaiver(waiver.id, waiverData);
+        } else {
+          await createWaiver(eventId, waiverData);
         }
       }
 
@@ -455,9 +677,396 @@ export default function EventForm() {
                     />
                   </div>
                 </div>
+
+                {/* Age Range */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Min Age</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={tt.ageMin}
+                      onChange={(e) => handleTicketChange(index, 'ageMin', e.target.value)}
+                      className="w-full px-3 py-2 bg-pavilion-700 border border-pavilion-600 rounded-lg text-white placeholder-gray-600 focus:border-gold-500 focus:outline-none text-sm"
+                      placeholder="e.g. 5"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Max Age</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={tt.ageMax}
+                      onChange={(e) => handleTicketChange(index, 'ageMax', e.target.value)}
+                      className="w-full px-3 py-2 bg-pavilion-700 border border-pavilion-600 rounded-lg text-white placeholder-gray-600 focus:border-gold-500 focus:outline-none text-sm"
+                      placeholder="e.g. 12"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Age Label</label>
+                    <input
+                      type="text"
+                      value={tt.ageLabel}
+                      onChange={(e) => handleTicketChange(index, 'ageLabel', e.target.value)}
+                      className="w-full px-3 py-2 bg-pavilion-700 border border-pavilion-600 rounded-lg text-white placeholder-gray-600 focus:border-gold-500 focus:outline-none text-sm"
+                      placeholder={tt.ageMin || tt.ageMax ? `Ages ${tt.ageMin || '0'}-${tt.ageMax || '∞'}` : 'Auto-generated'}
+                    />
+                  </div>
+                </div>
               </div>
             ))}
           </div>
+        </section>
+
+        {/* Addons */}
+        <section className="bg-pavilion-800 border border-pavilion-600/50 rounded-xl p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold">Add-ons</h2>
+            <button
+              type="button"
+              onClick={addAddonFn}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-pavilion-700 border border-pavilion-600/50 rounded-lg text-gold-400 hover:bg-pavilion-600 transition-all"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add Addon
+            </button>
+          </div>
+
+          {addons.length === 0 ? (
+            <p className="text-sm text-gray-500">No add-ons configured. Add-ons like skate hire, lockers, etc.</p>
+          ) : (
+            <div className="space-y-3">
+              {addons.map((addon, index) => {
+                const isExpanded = expandedAddon === index;
+                return (
+                  <div key={addon._key} className="bg-pavilion-700/50 border border-pavilion-600/30 rounded-xl overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedAddon(isExpanded ? null : index)}
+                      className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-pavilion-700 transition-colors"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-white">{addon.name || `Addon ${index + 1}`}</span>
+                        <span className="text-xs text-gray-500 bg-pavilion-800 px-2 py-0.5 rounded">{addon.type}</span>
+                        {addon.required && <span className="text-xs text-red-400">Required</span>}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); removeAddonFn(index); }}
+                          className="p-1 text-red-400 hover:text-red-300 transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                        {isExpanded ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+                      </div>
+                    </button>
+
+                    {isExpanded && (
+                      <div className="px-4 pb-4 space-y-3 border-t border-pavilion-600/30">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3">
+                          <div>
+                            <label className="block text-xs text-gray-500 mb-1">Name</label>
+                            <input
+                              type="text"
+                              value={addon.name}
+                              onChange={(e) => handleAddonChange(index, 'name', e.target.value)}
+                              className="w-full px-3 py-2 bg-pavilion-700 border border-pavilion-600 rounded-lg text-white placeholder-gray-600 focus:border-gold-500 focus:outline-none text-sm"
+                              placeholder="e.g. Skate Hire"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-gray-500 mb-1">Base Price (GBP)</label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={addon.price}
+                              onChange={(e) => handleAddonChange(index, 'price', e.target.value)}
+                              className="w-full px-3 py-2 bg-pavilion-700 border border-pavilion-600 rounded-lg text-white placeholder-gray-600 focus:border-gold-500 focus:outline-none text-sm"
+                              placeholder="0.00"
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs text-gray-500 mb-1">Description</label>
+                          <input
+                            type="text"
+                            value={addon.description}
+                            onChange={(e) => handleAddonChange(index, 'description', e.target.value)}
+                            className="w-full px-3 py-2 bg-pavilion-700 border border-pavilion-600 rounded-lg text-white placeholder-gray-600 focus:border-gold-500 focus:outline-none text-sm"
+                            placeholder="Optional description"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          <div>
+                            <label className="block text-xs text-gray-500 mb-1">Type</label>
+                            <select
+                              value={addon.type}
+                              onChange={(e) => handleAddonChange(index, 'type', e.target.value)}
+                              className="w-full px-3 py-2 bg-pavilion-700 border border-pavilion-600 rounded-lg text-white focus:border-gold-500 focus:outline-none text-sm"
+                            >
+                              <option value="select">Select (dropdown)</option>
+                              <option value="checkbox">Checkbox (yes/no)</option>
+                              <option value="quantity">Quantity (number)</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs text-gray-500 mb-1">Max Qty</label>
+                            <input
+                              type="number"
+                              min="1"
+                              value={addon.maxQuantity}
+                              onChange={(e) => handleAddonChange(index, 'maxQuantity', e.target.value)}
+                              className="w-full px-3 py-2 bg-pavilion-700 border border-pavilion-600 rounded-lg text-white focus:border-gold-500 focus:outline-none text-sm"
+                            />
+                          </div>
+                          <div className="flex items-end gap-4">
+                            <label className="flex items-center gap-2 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={addon.required}
+                                onChange={(e) => handleAddonChange(index, 'required', e.target.checked)}
+                                className="rounded border-pavilion-600 bg-pavilion-700 text-gold-500"
+                              />
+                              <span className="text-xs text-gray-400">Required</span>
+                            </label>
+                            <label className="flex items-center gap-2 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={addon.perTicket}
+                                onChange={(e) => handleAddonChange(index, 'perTicket', e.target.checked)}
+                                className="rounded border-pavilion-600 bg-pavilion-700 text-gold-500"
+                              />
+                              <span className="text-xs text-gray-400">Per ticket</span>
+                            </label>
+                          </div>
+                        </div>
+
+                        {/* Ticket type filter */}
+                        {ticketTypes.filter(tt => tt.name).length > 0 && (
+                          <div>
+                            <label className="block text-xs text-gray-500 mb-1">Applies to ticket types (empty = all)</label>
+                            <div className="flex flex-wrap gap-2">
+                              {ticketTypes.filter(tt => tt.name && tt.id).map(tt => (
+                                <label key={tt.id} className="flex items-center gap-1.5 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={addon.ticketTypeIds.includes(tt.id)}
+                                    onChange={(e) => {
+                                      const ids = e.target.checked
+                                        ? [...addon.ticketTypeIds, tt.id]
+                                        : addon.ticketTypeIds.filter(x => x !== tt.id);
+                                      handleAddonChange(index, 'ticketTypeIds', ids);
+                                    }}
+                                    className="rounded border-pavilion-600 bg-pavilion-700 text-gold-500"
+                                  />
+                                  <span className="text-xs text-gray-400">{tt.name}</span>
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Options (for select type) */}
+                        {addon.type === 'select' && (
+                          <div>
+                            <div className="flex items-center justify-between mb-2">
+                              <label className="block text-xs text-gray-500">Options</label>
+                              <button
+                                type="button"
+                                onClick={() => addAddonOption(index)}
+                                className="text-xs text-gold-400 hover:text-gold-300 flex items-center gap-1"
+                              >
+                                <Plus className="w-3 h-3" /> Add Option
+                              </button>
+                            </div>
+                            <div className="space-y-2">
+                              {addon.options.map((opt, optIndex) => (
+                                <div key={opt._key} className="flex items-center gap-2">
+                                  <input
+                                    type="text"
+                                    value={opt.label}
+                                    onChange={(e) => handleAddonOptionChange(index, optIndex, 'label', e.target.value)}
+                                    className="flex-1 px-2 py-1.5 bg-pavilion-700 border border-pavilion-600 rounded text-white text-xs focus:border-gold-500 focus:outline-none"
+                                    placeholder="Label (e.g. UK 8)"
+                                  />
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    value={opt.stock}
+                                    onChange={(e) => handleAddonOptionChange(index, optIndex, 'stock', e.target.value)}
+                                    className="w-16 px-2 py-1.5 bg-pavilion-700 border border-pavilion-600 rounded text-white text-xs focus:border-gold-500 focus:outline-none"
+                                    placeholder="Stock"
+                                  />
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    value={opt.priceOverride}
+                                    onChange={(e) => handleAddonOptionChange(index, optIndex, 'priceOverride', e.target.value)}
+                                    className="w-20 px-2 py-1.5 bg-pavilion-700 border border-pavilion-600 rounded text-white text-xs focus:border-gold-500 focus:outline-none"
+                                    placeholder="Price £"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => removeAddonOption(index, optIndex)}
+                                    className="p-1 text-red-400 hover:text-red-300"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        {/* Waivers */}
+        <section className="bg-pavilion-800 border border-pavilion-600/50 rounded-xl p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold">Waivers & Agreements</h2>
+            <button
+              type="button"
+              onClick={addWaiverFn}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-pavilion-700 border border-pavilion-600/50 rounded-lg text-gold-400 hover:bg-pavilion-600 transition-all"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add Waiver
+            </button>
+          </div>
+
+          {waivers.length === 0 ? (
+            <p className="text-sm text-gray-500">No waivers configured. Add liability waivers, T&Cs, etc.</p>
+          ) : (
+            <div className="space-y-3">
+              {waivers.map((waiver, index) => {
+                const isExpanded = expandedWaiver === index;
+                return (
+                  <div key={waiver._key} className="bg-pavilion-700/50 border border-pavilion-600/30 rounded-xl overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedWaiver(isExpanded ? null : index)}
+                      className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-pavilion-700 transition-colors"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-white">{waiver.name || `Waiver ${index + 1}`}</span>
+                        {waiver.required && <span className="text-xs text-red-400">Required</span>}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); removeWaiverFn(index); }}
+                          className="p-1 text-red-400 hover:text-red-300 transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                        {isExpanded ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+                      </div>
+                    </button>
+
+                    {isExpanded && (
+                      <div className="px-4 pb-4 space-y-3 border-t border-pavilion-600/30">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3">
+                          <div>
+                            <label className="block text-xs text-gray-500 mb-1">Name</label>
+                            <input
+                              type="text"
+                              value={waiver.name}
+                              onChange={(e) => handleWaiverChange(index, 'name', e.target.value)}
+                              className="w-full px-3 py-2 bg-pavilion-700 border border-pavilion-600 rounded-lg text-white placeholder-gray-600 focus:border-gold-500 focus:outline-none text-sm"
+                              placeholder="e.g. Liability Waiver"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-gray-500 mb-1">Load Template</label>
+                            <select
+                              value=""
+                              onChange={(e) => loadWaiverTemplate(index, parseInt(e.target.value, 10))}
+                              className="w-full px-3 py-2 bg-pavilion-700 border border-pavilion-600 rounded-lg text-white focus:border-gold-500 focus:outline-none text-sm"
+                            >
+                              <option value="">Select a template...</option>
+                              {waiverTemplates.map((tpl, i) => (
+                                <option key={i} value={i}>{tpl.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-4">
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={waiver.required}
+                              onChange={(e) => handleWaiverChange(index, 'required', e.target.checked)}
+                              className="rounded border-pavilion-600 bg-pavilion-700 text-gold-500"
+                            />
+                            <span className="text-xs text-gray-400">Required</span>
+                          </label>
+                        </div>
+
+                        {/* Ticket type filter */}
+                        {ticketTypes.filter(tt => tt.name && tt.id).length > 0 && (
+                          <div>
+                            <label className="block text-xs text-gray-500 mb-1">Applies to ticket types (empty = all)</label>
+                            <div className="flex flex-wrap gap-2">
+                              {ticketTypes.filter(tt => tt.name && tt.id).map(tt => (
+                                <label key={tt.id} className="flex items-center gap-1.5 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={(waiver.ticketTypeIds || []).includes(tt.id)}
+                                    onChange={(e) => {
+                                      const ids = e.target.checked
+                                        ? [...(waiver.ticketTypeIds || []), tt.id]
+                                        : (waiver.ticketTypeIds || []).filter(x => x !== tt.id);
+                                      handleWaiverChange(index, 'ticketTypeIds', ids);
+                                    }}
+                                    className="rounded border-pavilion-600 bg-pavilion-700 text-gold-500"
+                                  />
+                                  <span className="text-xs text-gray-400">{tt.name}</span>
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        <div>
+                          <label className="block text-xs text-gray-500 mb-1">Content (HTML)</label>
+                          <textarea
+                            value={waiver.content}
+                            onChange={(e) => handleWaiverChange(index, 'content', e.target.value)}
+                            rows={8}
+                            className="w-full px-3 py-2 bg-pavilion-700 border border-pavilion-600 rounded-lg text-white placeholder-gray-600 focus:border-gold-500 focus:outline-none text-sm font-mono resize-y"
+                            placeholder="<h3>Waiver Title</h3><p>Waiver text...</p>"
+                          />
+                        </div>
+
+                        {/* Preview */}
+                        {waiver.content && (
+                          <div>
+                            <label className="block text-xs text-gray-500 mb-1">Preview</label>
+                            <div
+                              className="p-3 bg-pavilion-800 rounded-lg text-xs text-gray-300 leading-relaxed max-h-40 overflow-y-auto prose prose-invert prose-sm"
+                              dangerouslySetInnerHTML={{ __html: waiver.content }}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </section>
 
         {/* Submit */}

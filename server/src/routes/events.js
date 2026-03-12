@@ -63,7 +63,32 @@ router.get('/:slugOrId', (req, res) => {
       'SELECT * FROM ticket_types WHERE event_id = ? ORDER BY sort_order ASC, price ASC'
     ).all(event.id);
 
-    res.json({ ...event, ticket_types: ticketTypes });
+    const addons = db.prepare(
+      'SELECT * FROM addons WHERE event_id = ? AND active = 1 ORDER BY sort_order ASC, id ASC'
+    ).all(event.id);
+
+    for (const addon of addons) {
+      addon.options = db.prepare(
+        'SELECT * FROM addon_options WHERE addon_id = ? AND active = 1 ORDER BY sort_order ASC, id ASC'
+      ).all(addon.id);
+      addon.ticket_type_ids = db.prepare(
+        'SELECT ticket_type_id FROM addon_ticket_types WHERE addon_id = ?'
+      ).all(addon.id).map(r => r.ticket_type_id);
+    }
+
+    const waivers = db.prepare(`
+      SELECT * FROM waivers
+      WHERE (event_id = ? OR event_id IS NULL) AND active = 1
+      ORDER BY sort_order ASC, id ASC
+    `).all(event.id);
+
+    for (const waiver of waivers) {
+      waiver.ticket_type_ids = db.prepare(
+        'SELECT ticket_type_id FROM waiver_ticket_types WHERE waiver_id = ?'
+      ).all(waiver.id).map(r => r.ticket_type_id);
+    }
+
+    res.json({ ...event, ticket_types: ticketTypes, addons, waivers });
   } catch (err) {
     console.error('Error fetching event:', err);
     res.status(500).json({ error: 'Failed to fetch event' });

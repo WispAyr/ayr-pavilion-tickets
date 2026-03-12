@@ -19,7 +19,7 @@ function generateOrderRef() {
 router.post('/checkout', async (req, res) => {
   try {
     const db = getDb();
-    const { eventId, items, customerName, customerEmail, customerPhone } = req.body;
+    const { eventId, items, customerName, customerEmail, customerPhone, addonSelections, waiverAcceptances } = req.body;
 
     if (!eventId || !items || !items.length || !customerName || !customerEmail) {
       return res.status(400).json({ error: 'Missing required fields: eventId, items, customerName, customerEmail' });
@@ -89,6 +89,77 @@ router.post('/checkout', async (req, res) => {
       });
     }
 
+    // Validate and calculate addon costs
+    let addonTotal = 0;
+    const validatedAddons = [];
+
+    if (addonSelections && addonSelections.length > 0) {
+      for (const sel of addonSelections) {
+        const addon = db.prepare('SELECT * FROM addons WHERE id = ? AND event_id = ? AND active = 1').get(sel.addonId, eventId);
+        if (!addon) continue;
+
+        let unitPrice = addon.price;
+        let optionLabel = sel.selectedOption || null;
+        let addonOptionId = null;
+
+        if (addon.type === 'select' && sel.addonOptionId) {
+          const option = db.prepare('SELECT * FROM addon_options WHERE id = ? AND addon_id = ? AND active = 1').get(sel.addonOptionId, addon.id);
+          if (!option) continue;
+          if (option.stock > 0 && option.reserved >= option.stock) {
+            return res.status(400).json({ error: `${addon.name} - ${option.label} is out of stock` });
+          }
+          unitPrice = option.price_override !== null ? option.price_override : addon.price;
+          optionLabel = option.label;
+          addonOptionId = option.id;
+        }
+
+        const qty = sel.quantity || 1;
+        addonTotal += unitPrice * qty;
+
+        validatedAddons.push({
+          addonId: addon.id,
+          addonName: addon.name,
+          addonOptionId,
+          selectedOption: optionLabel,
+          quantity: qty,
+          price: unitPrice,
+          ticketIndex: sel.ticketIndex !== undefined ? sel.ticketIndex : null,
+          ticketTypeId: sel.ticketTypeId || null
+        });
+
+        lineItems.push({
+          price_data: {
+            currency: 'gbp',
+            product_data: {
+              name: optionLabel ? `${addon.name}: ${optionLabel}` : addon.name,
+              description: addon.description || `Add-on for ${event.title}`,
+            },
+            unit_amount: unitPrice
+          },
+          quantity: qty
+        });
+      }
+    }
+
+    totalPence += addonTotal;
+
+    // Validate required waivers
+    const requiredWaivers = db.prepare(`
+      SELECT * FROM waivers WHERE (event_id = ? OR event_id IS NULL) AND active = 1 AND required = 1
+    `).all(eventId);
+
+    if (requiredWaivers.length > 0) {
+      const acceptedIds = (waiverAcceptances || []).map(w => w.waiverId);
+      for (const w of requiredWaivers) {
+        const waiverTtIds = db.prepare('SELECT ticket_type_id FROM waiver_ticket_types WHERE waiver_id = ?').all(w.id).map(r => r.ticket_type_id);
+        const selectedTtIds = items.map(i => i.ticketTypeId);
+        if (waiverTtIds.length > 0 && !waiverTtIds.some(id => selectedTtIds.includes(id))) continue;
+        if (!acceptedIds.includes(w.id)) {
+          return res.status(400).json({ error: `You must accept the "${w.name}" waiver to proceed` });
+        }
+      }
+    }
+
     // Create pending order
     const orderRef = generateOrderRef();
     const appUrl = process.env.APP_URL || 'http://localhost:5173';
@@ -102,7 +173,9 @@ router.post('/checkout', async (req, res) => {
       cancelUrl: `${appUrl}/events/${event.slug}`,
       metadata: {
         event_id: String(event.id),
-        order_items: JSON.stringify(orderItems)
+        order_items: JSON.stringify(orderItems),
+        addon_selections: validatedAddons.length > 0 ? JSON.stringify(validatedAddons) : undefined,
+        waiver_acceptances: waiverAcceptances && waiverAcceptances.length > 0 ? JSON.stringify(waiverAcceptances) : undefined
       }
     });
 
@@ -181,6 +254,64 @@ router.post('/webhook', async (req, res) => {
         });
 
         generateTickets();
+
+        // Store addon selections
+        const addonSelectionsRaw = session.metadata.addon_selections;
+        if (addonSelectionsRaw) {
+          try {
+            const addonSels = JSON.parse(addonSelectionsRaw);
+            const insertAddonSel = db.prepare(`
+              INSERT INTO order_addon_selections (order_id, ticket_id, addon_id, addon_option_id, selected_option, quantity, price)
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+            `);
+            const updateOptionReserved = db.prepare(`
+              UPDATE addon_options SET reserved = reserved + 1 WHERE id = ?
+            `);
+
+            for (const sel of addonSels) {
+              // For per-ticket addons, link to the specific ticket
+              let ticketId = null;
+              if (sel.ticketIndex !== null && sel.ticketIndex !== undefined && sel.ticketTypeId) {
+                const matchingTickets = tickets.filter(t => {
+                  const item = orderItems.find(oi => oi.ticketTypeName === t.ticketTypeName);
+                  return item && item.ticketTypeId === sel.ticketTypeId;
+                });
+                if (matchingTickets[sel.ticketIndex]) {
+                  const ticketRow = db.prepare('SELECT id FROM tickets WHERE code = ?').get(matchingTickets[sel.ticketIndex].code);
+                  if (ticketRow) ticketId = ticketRow.id;
+                }
+              }
+
+              insertAddonSel.run(
+                order.id, ticketId, sel.addonId, sel.addonOptionId || null,
+                sel.selectedOption, sel.quantity || 1, sel.price
+              );
+
+              if (sel.addonOptionId) {
+                updateOptionReserved.run(sel.addonOptionId);
+              }
+            }
+          } catch (e) {
+            console.error('Error storing addon selections:', e);
+          }
+        }
+
+        // Store waiver acceptances
+        const waiverAcceptancesRaw = session.metadata.waiver_acceptances;
+        if (waiverAcceptancesRaw) {
+          try {
+            const waiverAccs = JSON.parse(waiverAcceptancesRaw);
+            const insertWaiverAcc = db.prepare(`
+              INSERT INTO waiver_acceptances (order_id, waiver_id, ip_address, user_agent)
+              VALUES (?, ?, ?, ?)
+            `);
+            for (const acc of waiverAccs) {
+              insertWaiverAcc.run(order.id, acc.waiverId, acc.ipAddress || null, acc.userAgent || null);
+            }
+          } catch (e) {
+            console.error('Error storing waiver acceptances:', e);
+          }
+        }
 
         // Check if event is now sold out
         const ticketTypes = db.prepare('SELECT * FROM ticket_types WHERE event_id = ?').all(eventId);
