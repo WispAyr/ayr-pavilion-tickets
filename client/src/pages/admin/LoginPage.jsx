@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { Loader2, Lock, User } from 'lucide-react';
 import { adminLogin } from '../../lib/api';
 
@@ -80,6 +80,12 @@ export default function LoginPage() {
             {loading && <Loader2 className="w-4 h-4 animate-spin" />}
             Sign In
           </button>
+
+          <div className="text-center">
+            <Link to="/admin/forgot-password" className="text-sm text-gray-500 hover:text-gold-400 transition-colors">
+              Forgot your password?
+            </Link>
+          </div>
         </form>
       </div>
     </div>

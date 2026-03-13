@@ -17,14 +17,14 @@ async function generateQrDataUrl(ticketCode) {
 }
 
 async function generateQrBuffer(ticketCode) {
-  const scanUrl = `${process.env.APP_URL || 'http://localhost:5173'}/tickets/${ticketCode}`;
+  const scanUrl = `${process.env.APP_URL || 'https://tickets.ayrpavilion.com'}/tickets/${ticketCode}`;
 
   const buffer = await QRCode.toBuffer(scanUrl, {
     width: 400,
-    margin: 2,
+    margin: 3,
     color: {
-      dark: '#D4A843',
-      light: '#1a1a2e'
+      dark: '#000000',
+      light: '#ffffff'
     },
     errorCorrectionLevel: 'H'
   });

@@ -22,12 +22,13 @@ function getAuthHeaders() {
 
 async function request(path, options = {}) {
   const url = `${BASE_URL}${path}`;
+  const { headers: optHeaders, ...restOptions } = options;
   const config = {
+    ...restOptions,
     headers: {
       'Content-Type': 'application/json',
-      ...options.headers,
+      ...optHeaders,
     },
-    ...options,
   };
 
   const res = await fetch(url, config);
@@ -45,14 +46,22 @@ async function request(path, options = {}) {
   return camelizeKeys(json);
 }
 
-function authRequest(path, options = {}) {
-  return request(path, {
-    ...options,
-    headers: {
-      ...getAuthHeaders(),
-      ...options.headers,
-    },
-  });
+async function authRequest(path, options = {}) {
+  try {
+    return await request(path, {
+      ...options,
+      headers: {
+        ...getAuthHeaders(),
+        ...options.headers,
+      },
+    });
+  } catch (err) {
+    if (err.status === 401) {
+      localStorage.removeItem('admin_token');
+      window.location.href = '/admin/login';
+    }
+    throw err;
+  }
 }
 
 // Normalize event object for frontend consumption
@@ -239,16 +248,73 @@ export async function adminLogin(username, password) {
   });
   if (data.token) {
     localStorage.setItem('admin_token', data.token);
+    localStorage.setItem('admin_username', data.username || username);
+    localStorage.setItem('admin_role', data.role || 'admin');
+    localStorage.setItem('admin_display_name', data.displayName || data.username || username);
   }
   return data;
 }
 
 export function adminLogout() {
   localStorage.removeItem('admin_token');
+  localStorage.removeItem('admin_username');
+  localStorage.removeItem('admin_role');
+  localStorage.removeItem('admin_display_name');
 }
 
 export function isAdminLoggedIn() {
   return !!localStorage.getItem('admin_token');
+}
+
+export function getAdminRole() {
+  return localStorage.getItem('admin_role') || 'staff';
+}
+
+export function getAdminDisplayName() {
+  return localStorage.getItem('admin_display_name') || 'Admin';
+}
+
+// ─── Forgot / Reset Password ────────────────────────────────
+export function forgotPassword(email) {
+  return request('/admin/forgot-password', { method: 'POST', body: JSON.stringify({ email }) });
+}
+
+export function resetPassword(token, password) {
+  return request('/admin/reset-password', { method: 'POST', body: JSON.stringify({ token, password }) });
+}
+
+// ─── Profile ────────────────────────────────────────────────
+export function fetchProfile() {
+  return authRequest('/admin/profile');
+}
+
+export function updateProfile(data) {
+  return authRequest('/admin/profile', { method: 'PUT', body: JSON.stringify(data) });
+}
+
+export function changePassword(current_password, new_password) {
+  return authRequest('/admin/profile/password', { method: 'PUT', body: JSON.stringify({ current_password, new_password }) });
+}
+
+// ─── User Management ────────────────────────────────────────
+export function fetchUsers() {
+  return authRequest('/admin/users');
+}
+
+export function createUser(data) {
+  return authRequest('/admin/users', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function updateUser(id, data) {
+  return authRequest(`/admin/users/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+}
+
+export function deleteUser(id) {
+  return authRequest(`/admin/users/${id}`, { method: 'DELETE' });
+}
+
+export function changeUserPassword(id, password) {
+  return authRequest(`/admin/users/${id}/password`, { method: 'PUT', body: JSON.stringify({ password }) });
 }
 
 // ─── Admin Dashboard / Orders ───────────────────────────────
@@ -266,9 +332,10 @@ export function fetchOrder(id) {
   return authRequest(`/admin/orders/${id}`);
 }
 
-export function refundOrder(id) {
+export function refundOrder(id, body = {}) {
   return authRequest(`/admin/orders/${id}/refund`, {
     method: 'POST',
+    body: JSON.stringify(body),
   });
 }
 
@@ -288,6 +355,57 @@ export function uploadEventImage(eventId, file) {
     }
     return res.json();
   });
+}
+
+// ─── Scanner Users ──────────────────────────────────────────
+export function fetchScannerUsers() {
+  return authRequest('/admin/scanner-users');
+}
+
+export function createScannerUser(data) {
+  return authRequest('/admin/scanner-users', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function updateScannerUser(id, data) {
+  return authRequest(`/admin/scanner-users/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+}
+
+export function deleteScannerUser(id) {
+  return authRequest(`/admin/scanner-users/${id}`, { method: 'DELETE' });
+}
+
+// ─── Door Stats ─────────────────────────────────────────────
+export function fetchDoorStats(eventId) {
+  return authRequest(`/admin/door/${eventId}`);
+}
+
+// ─── Stats / Analytics ──────────────────────────────────────
+export function fetchStatsOverview() {
+  return authRequest('/admin/stats/overview');
+}
+export function fetchRevenueChart(days = 30) {
+  return authRequest(`/admin/stats/revenue-chart?days=${days}`);
+}
+export function fetchStatsByEvent() {
+  return authRequest('/admin/stats/by-event');
+}
+export function fetchTicketTypeStats() {
+  return authRequest('/admin/stats/ticket-types');
+}
+export function fetchScansTimeline(days = 30) {
+  return authRequest(`/admin/stats/scans-timeline?days=${days}`);
+}
+export function fetchScannerLeaderboard() {
+  return authRequest('/admin/stats/scanner-leaderboard');
+}
+export function fetchEmailStats() {
+  return authRequest('/admin/stats/emails');
+}
+export function fetchHourlyPattern() {
+  return authRequest('/admin/stats/hourly-pattern');
+}
+export function fetchEventOps(eventId) {
+  return authRequest(`/admin/stats/event/${eventId}`);
 }
 
 // ─── Social Posts ────────────────────────────────────────────

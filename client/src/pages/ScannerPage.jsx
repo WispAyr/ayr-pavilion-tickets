@@ -9,7 +9,10 @@ import {
   Hash,
   RotateCcw,
   ChevronDown,
+  Camera,
+  Keyboard,
 } from 'lucide-react';
+import { Html5Qrcode } from 'html5-qrcode';
 import { validateScannerPin, scanTicket, fetchScanStats, fetchEvents } from '../lib/api';
 
 // ─── PIN Entry Screen ───────────────────────────────────────
@@ -38,8 +41,8 @@ function PinEntry({ onAuthenticated }) {
     setLoading(true);
     setError(null);
     try {
-      await validateScannerPin(code);
-      onAuthenticated(code);
+      const data = await validateScannerPin(code);
+      onAuthenticated(code, data?.user?.name || 'Staff');
     } catch (err) {
       setError(err.message || 'Invalid PIN');
       setPin('');
@@ -115,7 +118,6 @@ function ScanResult({ result, onReset }) {
 
   const isValid = result.result === 'valid' || result.status === 'valid' || result.valid === true;
   const isAlreadyScanned = result.result === 'already_used' || result.status === 'already-scanned' || result.alreadyScanned === true;
-  const isInvalid = !isValid && !isAlreadyScanned;
 
   let bgClass, icon, title, subtitle;
   if (isValid) {
@@ -127,8 +129,8 @@ function ScanResult({ result, onReset }) {
     bgClass = 'from-amber-900/80 to-amber-900/20 border-amber-500/50';
     icon = <AlertTriangle className="w-20 h-20 text-amber-400" />;
     title = 'ALREADY SCANNED';
-    subtitle = result.checkedInAt
-      ? `First scanned at ${new Date(result.checkedInAt).toLocaleString('en-GB')}`
+    subtitle = result.checked_in_at
+      ? `First scanned at ${new Date(result.checked_in_at).toLocaleString('en-GB')}`
       : 'This ticket has already been used';
   } else {
     bgClass = 'from-red-900/80 to-red-900/20 border-red-500/50';
@@ -145,16 +147,16 @@ function ScanResult({ result, onReset }) {
 
       {result.ticket && (
         <div className="bg-pavilion-900/50 rounded-xl p-4 mb-4 text-left space-y-2 text-sm">
-          {result.ticket.holderName && (
+          {(result.ticket.holder_name || result.ticket.holderName) && (
             <div className="flex justify-between">
               <span className="text-gray-400">Name</span>
-              <span className="text-white font-semibold">{result.ticket.holderName}</span>
+              <span className="text-white font-semibold">{result.ticket.holder_name || result.ticket.holderName}</span>
             </div>
           )}
-          {result.ticket.ticketType && (
+          {(result.ticket.ticket_type || result.ticket.ticketType) && (
             <div className="flex justify-between">
               <span className="text-gray-400">Type</span>
-              <span className="text-white">{result.ticket.ticketType}</span>
+              <span className="text-white">{result.ticket.ticket_type || result.ticket.ticketType}</span>
             </div>
           )}
           {result.ticket.event && (
@@ -163,10 +165,10 @@ function ScanResult({ result, onReset }) {
               <span className="text-white">{result.ticket.event}</span>
             </div>
           )}
-          {result.ticket.orderRef && (
+          {(result.ticket.order_ref || result.ticket.orderRef) && (
             <div className="flex justify-between">
               <span className="text-gray-400">Order</span>
-              <span className="text-white font-mono">{result.ticket.orderRef}</span>
+              <span className="text-white font-mono">{result.ticket.order_ref || result.ticket.orderRef}</span>
             </div>
           )}
         </div>
@@ -179,13 +181,161 @@ function ScanResult({ result, onReset }) {
         <RotateCcw className="w-4 h-4" />
         Scan Next
       </button>
+
+    </div>
+  );
+}
+
+// ─── Camera QR Scanner ──────────────────────────────────────
+
+function CameraScanner({ onScan, enabled }) {
+  const scannerRef = useRef(null);
+  const html5QrRef = useRef(null);
+  const lastScanRef = useRef(null);
+  const [error, setError] = useState(null);
+  const [starting, setStarting] = useState(true);
+
+  const handleScan = useCallback((decodedText) => {
+    // Debounce — don't scan same code within 3 seconds
+    const now = Date.now();
+    if (lastScanRef.current && lastScanRef.current.text === decodedText && now - lastScanRef.current.time < 3000) {
+      return;
+    }
+    lastScanRef.current = { text: decodedText, time: now };
+
+    // Extract ticket code from URL or use raw code
+    let ticketCode = decodedText;
+    try {
+      const url = new URL(decodedText);
+      const parts = url.pathname.split('/');
+      const ticketsIdx = parts.indexOf('tickets');
+      if (ticketsIdx !== -1 && parts[ticketsIdx + 1]) {
+        ticketCode = parts[ticketsIdx + 1];
+      }
+    } catch {
+      // Not a URL, use raw value
+    }
+
+    onScan(ticketCode);
+  }, [onScan]);
+
+  useEffect(() => {
+    if (!enabled) return;
+
+    let cancelled = false;
+    const containerId = 'qr-reader';
+
+    async function startScanner() {
+      try {
+        // Small delay to ensure DOM element is mounted
+        await new Promise(r => setTimeout(r, 300));
+        if (cancelled) return;
+
+        const html5Qr = new Html5Qrcode(containerId);
+        html5QrRef.current = html5Qr;
+
+        // Use facingMode for mobile — more reliable than cameraId
+        const config = {
+          fps: 15,
+          qrbox: (viewfinderWidth, viewfinderHeight) => {
+            const minDim = Math.min(viewfinderWidth, viewfinderHeight);
+            const size = Math.floor(minDim * 0.7);
+            return { width: size, height: size };
+          },
+          aspectRatio: 1,
+          disableFlip: false,
+        };
+
+        if (cancelled) return;
+
+        await html5Qr.start(
+          { facingMode: 'environment' },
+          config,
+          handleScan,
+          () => {} // ignore per-frame no-QR errors
+        );
+
+        if (!cancelled) setStarting(false);
+      } catch (err) {
+        if (cancelled) return;
+        console.error('Camera error:', err);
+
+        // Fallback: try any available camera
+        try {
+          const cameras = await Html5Qrcode.getCameras();
+          if (cameras && cameras.length > 0 && !cancelled) {
+            const html5Qr = new Html5Qrcode(containerId);
+            html5QrRef.current = html5Qr;
+            await html5Qr.start(
+              cameras[cameras.length - 1].id,
+              { fps: 15, qrbox: { width: 250, height: 250 } },
+              handleScan,
+              () => {}
+            );
+            if (!cancelled) setStarting(false);
+            return;
+          }
+        } catch {}
+
+        if (!cancelled) {
+          setError(err.message || 'Failed to access camera');
+          setStarting(false);
+        }
+      }
+    }
+
+    startScanner();
+
+    return () => {
+      cancelled = true;
+      if (html5QrRef.current) {
+        html5QrRef.current.stop().catch(() => {});
+        html5QrRef.current = null;
+      }
+    };
+  }, [enabled, handleScan]);
+
+  if (error) {
+    return (
+      <div className="bg-red-900/20 border border-red-500/30 rounded-xl p-6 text-center">
+        <XCircle className="w-10 h-10 text-red-400 mx-auto mb-3" />
+        <p className="text-red-300 text-sm">{error}</p>
+        <p className="text-gray-500 text-xs mt-2">Make sure you've granted camera permissions and are using HTTPS</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative">
+      {starting && (
+        <div className="absolute inset-0 flex items-center justify-center bg-pavilion-800 rounded-xl z-10">
+          <div className="text-center">
+            <Loader2 className="w-8 h-8 text-gold-400 animate-spin mx-auto mb-2" />
+            <p className="text-gray-400 text-sm">Starting camera...</p>
+          </div>
+        </div>
+      )}
+      <div
+        id="qr-reader"
+        ref={scannerRef}
+        className="rounded-xl overflow-hidden bg-pavilion-800"
+        style={{ minHeight: 320 }}
+      />
+      {!starting && (
+        <div className="absolute bottom-3 left-0 right-0 text-center pointer-events-none">
+          <span className="bg-black/60 text-white text-xs px-3 py-1 rounded-full">
+            Point at QR code on ticket
+          </span>
+        </div>
+      )}
     </div>
   );
 }
 
 // ─── Main Scanner Screen ────────────────────────────────────
 
-function ScannerInterface({ pin }) {
+function ScannerInterface({ pin, userName }) {
+  const [mode, setMode] = useState('camera'); // 'camera' | 'manual'
   const [code, setCode] = useState('');
   const [scanning, setScanning] = useState(false);
   const [result, setResult] = useState(null);
@@ -217,54 +367,97 @@ function ScannerInterface({ pin }) {
     loadStats();
   }, [loadStats]);
 
-  async function handleScan(e) {
-    e?.preventDefault();
-    const trimmed = code.trim();
-    if (!trimmed) return;
-
+  const doScan = useCallback(async (ticketCode) => {
+    if (!ticketCode?.trim()) return;
     setScanning(true);
     setResult(null);
 
+    console.log('[Scanner] Scanning code:', ticketCode.trim(), 'with pin:', pin ? '****' : 'NONE');
+
     try {
-      const data = await scanTicket(trimmed, pin);
+      const data = await scanTicket(ticketCode.trim(), pin);
+      console.log('[Scanner] Response:', JSON.stringify(data));
       setResult(data);
       loadStats();
+
+      // Vibrate on result (mobile)
+      if (navigator.vibrate) {
+        if (data.result === 'valid') navigator.vibrate(200);
+        else navigator.vibrate([100, 50, 100]);
+      }
     } catch (err) {
+      console.error('[Scanner] Error:', err.message, err.status, err.body);
       setResult({
-        status: 'invalid',
+        result: 'error',
         error: err.message || 'Scan failed',
       });
     } finally {
       setScanning(false);
     }
+  }, [pin, loadStats]);
+
+  async function handleManualScan(e) {
+    e?.preventDefault();
+    await doScan(code);
   }
 
   function handleReset() {
     setResult(null);
     setCode('');
-    setTimeout(() => inputRef.current?.focus(), 100);
+    if (mode === 'manual') {
+      setTimeout(() => inputRef.current?.focus(), 100);
+    }
   }
 
   return (
     <div className="min-h-screen bg-pavilion-900 px-4 pt-6 pb-12">
       <div className="max-w-lg mx-auto">
         {/* Header */}
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <QrCode className="w-6 h-6 text-gold-400" />
-            <h1 className="text-xl font-bold">Door Scanner</h1>
+            <div>
+              <h1 className="text-xl font-bold leading-tight">Door Scanner</h1>
+              {userName && <p className="text-xs text-gray-500">Signed in as {userName}</p>}
+            </div>
           </div>
           {stats && (
             <div className="text-right">
-              <p className="text-2xl font-bold text-gold-400 tabular-nums">{stats.checkedIn || 0}</p>
-              <p className="text-xs text-gray-500">scanned{stats.totalTickets ? ` / ${stats.totalTickets}` : ''}</p>
+              <p className="text-2xl font-bold text-gold-400 tabular-nums">{stats.checked_in || stats.checkedIn || 0}</p>
+              <p className="text-xs text-gray-500">scanned{stats.total_tickets || stats.totalTickets ? ` / ${stats.total_tickets || stats.totalTickets}` : ''}</p>
             </div>
           )}
         </div>
 
+        {/* Mode toggle */}
+        <div className="flex gap-2 mb-4">
+          <button
+            onClick={() => setMode('camera')}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-all ${
+              mode === 'camera'
+                ? 'bg-gold-500 text-pavilion-900'
+                : 'bg-pavilion-800 border border-pavilion-600/50 text-gray-400 hover:text-white'
+            }`}
+          >
+            <Camera className="w-4 h-4" />
+            Camera
+          </button>
+          <button
+            onClick={() => setMode('manual')}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-all ${
+              mode === 'manual'
+                ? 'bg-gold-500 text-pavilion-900'
+                : 'bg-pavilion-800 border border-pavilion-600/50 text-gray-400 hover:text-white'
+            }`}
+          >
+            <Keyboard className="w-4 h-4" />
+            Manual
+          </button>
+        </div>
+
         {/* Event selector */}
         {events.length > 0 && (
-          <div className="relative mb-6">
+          <div className="relative mb-4">
             <select
               value={selectedEvent}
               onChange={(e) => setSelectedEvent(e.target.value)}
@@ -284,10 +477,23 @@ function ScannerInterface({ pin }) {
         {/* Result display */}
         {result && <ScanResult result={result} onReset={handleReset} />}
 
-        {/* Scan input */}
-        {!result && (
+        {/* Camera scanner */}
+        {!result && mode === 'camera' && (
+          <div className="space-y-3">
+            <CameraScanner onScan={doScan} enabled={!result && mode === 'camera'} />
+            {scanning && (
+              <div className="flex items-center justify-center gap-2 text-gold-400">
+                <Loader2 className="w-5 h-5 animate-spin" />
+                <span className="text-sm">Validating...</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Manual input */}
+        {!result && mode === 'manual' && (
           <div className="space-y-4">
-            <form onSubmit={handleScan}>
+            <form onSubmit={handleManualScan}>
               <div className="relative">
                 <Hash className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500" />
                 <input
@@ -337,11 +543,11 @@ function ScannerInterface({ pin }) {
 // ─── Page Wrapper ───────────────────────────────────────────
 
 export default function ScannerPage() {
-  const [pin, setPin] = useState(null);
+  const [auth, setAuth] = useState(null); // { pin, userName }
 
-  if (!pin) {
-    return <PinEntry onAuthenticated={setPin} />;
+  if (!auth) {
+    return <PinEntry onAuthenticated={(pin, userName) => setAuth({ pin, userName })} />;
   }
 
-  return <ScannerInterface pin={pin} />;
+  return <ScannerInterface pin={auth.pin} userName={auth.userName} />;
 }

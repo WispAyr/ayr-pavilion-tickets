@@ -63,6 +63,11 @@ function initialize() {
       status TEXT DEFAULT 'pending' CHECK(status IN ('pending','paid','refunded','cancelled')),
       stripe_session_id TEXT,
       stripe_payment_intent TEXT,
+      refund_amount INTEGER DEFAULT 0,
+      refund_reason TEXT,
+      refund_notes TEXT,
+      refunded_at TEXT,
+      stripe_refund_id TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );
@@ -104,6 +109,29 @@ function initialize() {
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS admin_users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      display_name TEXT,
+      role TEXT DEFAULT 'admin' CHECK(role IN ('owner','admin','staff')),
+      active INTEGER DEFAULT 1,
+      last_login TEXT,
+      reset_token TEXT,
+      reset_token_expires TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS scanner_users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      pin TEXT UNIQUE NOT NULL,
+      active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS email_logs (
@@ -215,6 +243,21 @@ function initialize() {
   }
   if (!ticketTypeCols.includes('age_label')) {
     db.exec('ALTER TABLE ticket_types ADD COLUMN age_label TEXT');
+  }
+
+  // Seed default admin user if none exist
+  const adminCount = db.prepare('SELECT COUNT(*) as count FROM admin_users').get();
+  if (adminCount.count === 0) {
+    const bcryptjs = require('bcryptjs');
+    const hash = bcryptjs.hashSync(process.env.ADMIN_PASSWORD || 'pavilion-admin-2026', 10);
+    db.prepare(`INSERT INTO admin_users (username, email, password_hash, display_name, role) VALUES (?, ?, ?, ?, ?)`).run(
+      process.env.ADMIN_USERNAME || 'admin',
+      'admin@ayrpavilion.com',
+      hash,
+      'Admin',
+      'owner'
+    );
+    console.log('Default admin user created');
   }
 
   console.log('Database initialized successfully');

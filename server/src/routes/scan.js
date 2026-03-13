@@ -3,27 +3,54 @@ const router = express.Router();
 const { getDb } = require('../db');
 const { scannerAuth } = require('../middleware/auth');
 
-// POST /api/scan/validate - validate scanner PIN
+// POST /api/scan/validate - validate scanner PIN against DB
 router.post('/validate', (req, res) => {
+  const db = getDb();
   const { pin } = req.body;
-  const expectedPin = process.env.SCANNER_PIN || '1234';
 
-  if (!pin || pin !== expectedPin) {
+  if (!pin) {
     return res.status(401).json({ valid: false, error: 'Invalid PIN' });
   }
 
-  res.json({ valid: true });
+  // Check DB first
+  const user = db.prepare('SELECT id, name, pin FROM scanner_users WHERE pin = ? AND active = 1').get(pin);
+  if (user) {
+    return res.json({ valid: true, user: { id: user.id, name: user.name } });
+  }
+
+  // Fallback to env var
+  const expectedPin = process.env.SCANNER_PIN || '1234';
+  if (pin === expectedPin) {
+    return res.json({ valid: true, user: { id: 0, name: 'Default' } });
+  }
+
+  res.status(401).json({ valid: false, error: 'Invalid PIN' });
 });
 
 // POST /api/scan - scan a ticket code
 router.post('/', scannerAuth, (req, res) => {
   try {
     const db = getDb();
-    const { code, scanned_by } = req.body;
+    let { code } = req.body;
+    const scanned_by = req.scannerUser ? req.scannerUser.name : (req.body.scanned_by || null);
 
     if (!code) {
       return res.status(400).json({ result: 'error', message: 'No ticket code provided' });
     }
+
+    // Extract ticket code from URL if a full URL was scanned
+    try {
+      const url = new URL(code);
+      const parts = url.pathname.split('/');
+      const ticketsIdx = parts.indexOf('tickets');
+      if (ticketsIdx !== -1 && parts[ticketsIdx + 1]) {
+        code = decodeURIComponent(parts[ticketsIdx + 1]);
+      }
+    } catch {
+      // Not a URL, use as-is
+    }
+
+    console.log(`[SCAN] Code received: ${code}`);
 
     const ticket = db.prepare(`
       SELECT

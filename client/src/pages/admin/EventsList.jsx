@@ -8,6 +8,7 @@ import {
   Edit,
   Trash2,
   Search,
+  BarChart3,
 } from 'lucide-react';
 import { fetchEvents, deleteEvent } from '../../lib/api';
 
@@ -172,6 +173,13 @@ export default function EventsList() {
               </div>
 
               <div className="flex items-center gap-2 flex-shrink-0">
+                <Link
+                  to={`/admin/events/${event.id}/ops`}
+                  className="flex items-center gap-1.5 px-3 py-2 bg-gold-500/10 border border-gold-500/20 rounded-lg text-sm text-gold-400 hover:bg-gold-500/20 transition-all"
+                >
+                  <BarChart3 className="w-3.5 h-3.5" />
+                  Ops
+                </Link>
                 <Link
                   to={`/admin/events/${event.id}/edit`}
                   className="flex items-center gap-1.5 px-3 py-2 bg-pavilion-700 border border-pavilion-600/50 rounded-lg text-sm text-gray-300 hover:text-white hover:bg-pavilion-600 transition-all"

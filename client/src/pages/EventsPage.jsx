@@ -118,6 +118,13 @@ export default function EventsPage() {
           </div>
         )}
       </div>
+
+      {/* Footer */}
+      <footer className="mt-16 pb-8 text-center text-xs text-gray-600">
+        <a href="/terms" className="hover:text-gold-400 transition-colors">Terms & Conditions</a>
+        <span className="mx-2">·</span>
+        <span>Ayr Pavilion</span>
+      </footer>
     </div>
   );
 }

@@ -348,12 +348,28 @@ function OrderSummary({
                 </div>
               )}
 
+              {/* Terms & Conditions */}
+              <label className="flex items-start gap-2.5 py-2 cursor-pointer group">
+                <input
+                  type="checkbox"
+                  checked={termsAccepted}
+                  onChange={(e) => setTermsAccepted(e.target.checked)}
+                  className="mt-0.5 w-4 h-4 rounded border-pavilion-600 bg-pavilion-700 text-gold-500 focus:ring-gold-500 focus:ring-offset-0 cursor-pointer"
+                />
+                <span className="text-xs text-gray-400 group-hover:text-gray-300 transition-colors leading-relaxed">
+                  I agree to the{' '}
+                  <a href="/terms" target="_blank" rel="noopener noreferrer" className="text-gold-400 hover:text-gold-300 underline underline-offset-2">
+                    Terms & Conditions
+                  </a>
+                </span>
+              </label>
+
               {checkoutError && <p className="text-red-400 text-sm">{checkoutError}</p>}
 
               <button
                 type="submit"
-                disabled={checkoutLoading}
-                className="w-full py-3 bg-gold-500 hover:bg-gold-600 text-pavilion-900 font-bold rounded-lg transition-all flex items-center justify-center gap-2"
+                disabled={checkoutLoading || !termsAccepted}
+                className="w-full py-3 bg-gold-500 hover:bg-gold-600 text-pavilion-900 font-bold rounded-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {checkoutLoading && <Loader2 className="w-4 h-4 animate-spin" />}
                 Pay {formatPrice(grandTotal)}
@@ -392,6 +408,7 @@ export default function EventDetailPage() {
   const [addonSelections, setAddonSelections] = useState({});
   // Waiver acceptances: array of waiver IDs
   const [acceptedWaivers, setAcceptedWaivers] = useState([]);
+  const [termsAccepted, setTermsAccepted] = useState(false);
   // Per-ticket accordion state
   const [expandedTickets, setExpandedTickets] = useState({});
 

@@ -48,6 +48,11 @@ export default function OrdersList() {
   const [search, setSearch] = useState('');
   const [expandedId, setExpandedId] = useState(null);
   const [refunding, setRefunding] = useState(null);
+  const [refundModal, setRefundModal] = useState(null); // order object or null
+  const [refundType, setRefundType] = useState('full');
+  const [refundAmount, setRefundAmount] = useState('');
+  const [refundReason, setRefundReason] = useState('');
+  const [refundNotes, setRefundNotes] = useState('');
 
   useEffect(() => {
     loadOrders();
@@ -64,14 +69,31 @@ export default function OrdersList() {
       .finally(() => setLoading(false));
   }
 
-  async function handleRefund(orderId) {
-    if (!confirm('Are you sure you want to refund this order? This cannot be undone.')) return;
+  function openRefundModal(order) {
+    setRefundModal(order);
+    setRefundType('full');
+    setRefundAmount(((order.total || 0) / 100).toFixed(2));
+    setRefundReason('');
+    setRefundNotes('');
+  }
+
+  async function handleRefund() {
+    if (!refundModal) return;
+    const orderId = refundModal.id;
     setRefunding(orderId);
     try {
-      await refundOrder(orderId);
+      const body = {
+        reason: refundReason || undefined,
+        notes: refundNotes || undefined,
+      };
+      if (refundType === 'partial') {
+        body.amount = Math.round(parseFloat(refundAmount) * 100);
+      }
+      await refundOrder(orderId, body);
       setOrders((prev) =>
-        prev.map((o) => (o.id === orderId ? { ...o, status: 'refunded' } : o))
+        prev.map((o) => (o.id === orderId ? { ...o, status: refundType === 'full' ? 'refunded' : o.status } : o))
       );
+      setRefundModal(null);
     } catch (err) {
       alert('Refund failed: ' + err.message);
     } finally {
@@ -258,7 +280,7 @@ export default function OrdersList() {
                     {canRefund && (
                       <div className="pt-2">
                         <button
-                          onClick={() => handleRefund(order.id)}
+                          onClick={() => openRefundModal(order)}
                           disabled={refunding === order.id}
                           className="flex items-center gap-2 px-4 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400 hover:bg-red-500/20 transition-all disabled:opacity-50"
                         >
@@ -276,6 +298,123 @@ export default function OrdersList() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Refund Modal */}
+      {refundModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+          <div className="bg-pavilion-800 border border-pavilion-600/50 rounded-2xl w-full max-w-md animate-fade-in">
+            <div className="p-5 border-b border-pavilion-600/50">
+              <h3 className="text-lg font-bold">Process Refund</h3>
+              <p className="text-sm text-gray-400 mt-1">
+                Order {refundModal.orderRef || refundModal.order_ref} · {refundModal.customerName || refundModal.customer_name}
+              </p>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {/* Refund type */}
+              <div>
+                <label className="block text-sm font-medium text-gray-400 mb-2">Refund Type</label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => { setRefundType('full'); setRefundAmount(((refundModal.total || 0) / 100).toFixed(2)); }}
+                    className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                      refundType === 'full'
+                        ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                        : 'bg-pavilion-700 text-gray-400 border border-pavilion-600/50 hover:text-white'
+                    }`}
+                  >
+                    Full Refund
+                  </button>
+                  <button
+                    onClick={() => { setRefundType('partial'); setRefundAmount(''); }}
+                    className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                      refundType === 'partial'
+                        ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                        : 'bg-pavilion-700 text-gray-400 border border-pavilion-600/50 hover:text-white'
+                    }`}
+                  >
+                    Partial Refund
+                  </button>
+                </div>
+              </div>
+
+              {/* Amount */}
+              <div>
+                <label className="block text-sm font-medium text-gray-400 mb-1.5">
+                  Amount {refundType === 'full' ? '' : '(£)'}
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">£</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    max={((refundModal.total || 0) / 100).toFixed(2)}
+                    value={refundAmount}
+                    onChange={(e) => setRefundAmount(e.target.value)}
+                    disabled={refundType === 'full'}
+                    className="w-full pl-8 pr-4 py-2.5 bg-pavilion-700 border border-pavilion-600 rounded-lg text-white text-sm focus:border-gold-500 focus:outline-none disabled:opacity-50"
+                    placeholder="0.00"
+                  />
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  Original order total: £{((refundModal.total || 0) / 100).toFixed(2)}
+                </p>
+              </div>
+
+              {/* Reason */}
+              <div>
+                <label className="block text-sm font-medium text-gray-400 mb-1.5">Reason</label>
+                <select
+                  value={refundReason}
+                  onChange={(e) => setRefundReason(e.target.value)}
+                  className="w-full px-3 py-2.5 bg-pavilion-700 border border-pavilion-600 rounded-lg text-white text-sm focus:border-gold-500 focus:outline-none"
+                >
+                  <option value="">Select a reason...</option>
+                  <option value="Customer request">Customer request</option>
+                  <option value="Event cancelled">Event cancelled</option>
+                  <option value="Event rescheduled">Event rescheduled</option>
+                  <option value="Duplicate purchase">Duplicate purchase</option>
+                  <option value="Wrong tickets">Wrong tickets purchased</option>
+                  <option value="Technical issue">Technical issue</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+
+              {/* Notes */}
+              <div>
+                <label className="block text-sm font-medium text-gray-400 mb-1.5">Notes (optional)</label>
+                <textarea
+                  value={refundNotes}
+                  onChange={(e) => setRefundNotes(e.target.value)}
+                  rows={2}
+                  className="w-full px-3 py-2.5 bg-pavilion-700 border border-pavilion-600 rounded-lg text-white text-sm focus:border-gold-500 focus:outline-none resize-none"
+                  placeholder="Internal notes about this refund..."
+                />
+              </div>
+            </div>
+
+            <div className="p-5 border-t border-pavilion-600/50 flex gap-3">
+              <button
+                onClick={() => setRefundModal(null)}
+                className="flex-1 py-2.5 bg-pavilion-700 border border-pavilion-600/50 rounded-lg text-sm text-gray-400 hover:text-white transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleRefund}
+                disabled={refunding || (refundType === 'partial' && (!refundAmount || parseFloat(refundAmount) <= 0))}
+                className="flex-1 py-2.5 bg-red-500/20 border border-red-500/30 rounded-lg text-sm text-red-400 font-medium hover:bg-red-500/30 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {refunding ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : null}
+                Refund £{refundAmount || '0.00'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

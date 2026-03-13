@@ -75,7 +75,6 @@ const waiversRoutes = require('./routes/waivers');
 
 const trackingRoutes = require('./routes/tracking');
 const socialRoutes = require('./routes/social');
-
 app.use('/api/track', trackingRoutes);
 app.use('/api/events', eventsRoutes);
 app.use('/api', ticketTypesRoutes);
