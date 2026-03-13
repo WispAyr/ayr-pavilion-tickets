@@ -733,4 +733,90 @@ router.get('/door/:eventId', adminAuth, (req, res) => {
   }
 });
 
+// POST /api/admin/orders/:id/add-addon - add addon top-up to existing order
+router.post('/orders/:id/add-addon', adminAuth, (req, res) => {
+  try {
+    const db = getDb();
+    const order = db.prepare(`
+      SELECT o.*, e.title as event_title FROM orders o
+      JOIN events e ON o.event_id = e.id WHERE o.id = ?
+    `).get(req.params.id);
+
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    if (order.status !== 'paid') return res.status(400).json({ error: 'Can only add addons to paid orders' });
+
+    const { selections, paymentMethod, notes } = req.body;
+    // selections: [{ addonId, addonOptionId?, quantity?, ticketId? }]
+    // paymentMethod: 'cash' | 'comp' | 'card-on-file' (no new Stripe session for now)
+
+    if (!selections || !selections.length) {
+      return res.status(400).json({ error: 'No addon selections provided' });
+    }
+
+    let totalAdded = 0;
+    const added = [];
+
+    const insertAddonSel = db.prepare(`
+      INSERT INTO order_addon_selections (order_id, ticket_id, addon_id, addon_option_id, selected_option, quantity, price)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    const updateOptionReserved = db.prepare(`
+      UPDATE addon_options SET reserved = reserved + ? WHERE id = ?
+    `);
+
+    const addAddons = db.transaction(() => {
+      for (const sel of selections) {
+        const addon = db.prepare('SELECT * FROM addons WHERE id = ? AND event_id = ? AND active = 1').get(sel.addonId, order.event_id);
+        if (!addon) continue;
+
+        let unitPrice = addon.price;
+        let optionLabel = null;
+        let addonOptionId = null;
+
+        if (addon.type === 'select' && sel.addonOptionId) {
+          const option = db.prepare('SELECT * FROM addon_options WHERE id = ? AND addon_id = ? AND active = 1').get(sel.addonOptionId, addon.id);
+          if (!option) continue;
+          if (option.stock > 0 && option.reserved >= option.stock) {
+            throw new Error(`${addon.name} - ${option.label} is out of stock`);
+          }
+          unitPrice = option.price_override !== null ? option.price_override : addon.price;
+          optionLabel = option.label;
+          addonOptionId = option.id;
+        }
+
+        const qty = sel.quantity || 1;
+        const ticketId = sel.ticketId || null;
+
+        insertAddonSel.run(order.id, ticketId, addon.id, addonOptionId, optionLabel, qty, unitPrice);
+
+        if (addonOptionId) {
+          updateOptionReserved.run(qty, addonOptionId);
+        }
+
+        totalAdded += unitPrice * qty;
+        added.push({ addon: addon.name, option: optionLabel, quantity: qty, price: unitPrice });
+      }
+    });
+
+    addAddons();
+
+    // Update order total if payment method is cash or card
+    if (paymentMethod !== 'comp' && totalAdded > 0) {
+      db.prepare('UPDATE orders SET total = total + ?, updated_at = datetime(\'now\') WHERE id = ?').run(totalAdded, order.id);
+    }
+
+    // Log the top-up (store as a note via notes field or just return)
+    res.json({
+      message: `${added.length} addon(s) added to order ${order.order_ref}`,
+      added,
+      total_added: totalAdded,
+      payment_method: paymentMethod || 'cash',
+      notes: notes || null,
+    });
+  } catch (err) {
+    console.error('Add addon error:', err);
+    res.status(500).json({ error: err.message || 'Failed to add addon to order' });
+  }
+});
+
 module.exports = router;

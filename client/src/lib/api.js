@@ -408,6 +408,14 @@ export function fetchEventOps(eventId) {
   return authRequest(`/admin/stats/event/${eventId}`);
 }
 
+// ─── Addon Top-Up ───────────────────────────────────────────
+export function addAddonToOrder(orderId, data) {
+  return authRequest(`/admin/orders/${orderId}/add-addon`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
 // ─── Social Posts ────────────────────────────────────────────
 export function generateSocialPost(eventId, data) {
   return authRequest(`/events/${eventId}/social-post`, {

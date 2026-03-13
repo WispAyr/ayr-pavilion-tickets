@@ -9,6 +9,7 @@ import {
   ShoppingCart,
 } from 'lucide-react';
 import { fetchOrders, refundOrder } from '../../lib/api';
+import AddAddonModal from './AddAddonModal';
 
 function formatPrice(pence) {
   return `\u00a3${(pence / 100).toFixed(2)}`;
@@ -49,6 +50,7 @@ export default function OrdersList() {
   const [expandedId, setExpandedId] = useState(null);
   const [refunding, setRefunding] = useState(null);
   const [refundModal, setRefundModal] = useState(null); // order object or null
+  const [addonModal, setAddonModal] = useState(null); // order object or null
   const [refundType, setRefundType] = useState('full');
   const [refundAmount, setRefundAmount] = useState('');
   const [refundReason, setRefundReason] = useState('');
@@ -278,7 +280,14 @@ export default function OrdersList() {
 
                     {/* Refund button */}
                     {canRefund && (
-                      <div className="pt-2">
+                      <div className="pt-2 flex gap-2 flex-wrap">
+                        <button
+                          onClick={() => setAddonModal(order)}
+                          className="flex items-center gap-2 px-4 py-2 bg-gold-500/10 border border-gold-500/30 rounded-lg text-sm text-gold-400 hover:bg-gold-500/20 transition-all"
+                        >
+                          <ShoppingCart className="w-4 h-4" />
+                          Add Addon
+                        </button>
                         <button
                           onClick={() => openRefundModal(order)}
                           disabled={refunding === order.id}
@@ -416,6 +425,17 @@ export default function OrdersList() {
             </div>
           </div>
         </div>
+      )}
+      {/* Add Addon Modal */}
+      {addonModal && (
+        <AddAddonModal
+          order={addonModal}
+          onClose={() => setAddonModal(null)}
+          onSuccess={() => {
+            setAddonModal(null);
+            loadOrders();
+          }}
+        />
       )}
     </div>
   );
