@@ -245,6 +245,12 @@ function initialize() {
     db.exec('ALTER TABLE ticket_types ADD COLUMN age_label TEXT');
   }
 
+  // Add pending_data column to orders (stores addon/waiver data to avoid Stripe metadata limits)
+  const orderCols = db.prepare("PRAGMA table_info(orders)").all().map(c => c.name);
+  if (!orderCols.includes('pending_data')) {
+    db.exec('ALTER TABLE orders ADD COLUMN pending_data TEXT');
+  }
+
   // Seed default admin user if none exist
   const adminCount = db.prepare('SELECT COUNT(*) as count FROM admin_users').get();
   if (adminCount.count === 0) {

@@ -239,6 +239,8 @@ function OrderSummary({
   onToggleWaiver,
   addonSelections,
   addons,
+  termsAccepted,
+  setTermsAccepted,
 }) {
   const selected = ticketTypes.filter((tt) => quantities[tt.id] > 0);
   const grandTotal = totalPrice + addonTotal;
@@ -289,12 +291,33 @@ function OrderSummary({
             ))}
           </div>
 
+          {grandTotal > 0 && (() => {
+            const bookingFee = Math.ceil(grandTotal * 0.015) + 20;
+            return (
+              <div className="border-t border-pavilion-600/50 pt-4 mb-6 space-y-2">
+                <div className="flex justify-between text-sm text-gray-400">
+                  <span>Subtotal</span>
+                  <span>{formatPrice(grandTotal)}</span>
+                </div>
+                <div className="flex justify-between text-sm text-gray-400">
+                  <span>Booking fee</span>
+                  <span>{formatPrice(bookingFee)}</span>
+                </div>
+                <div className="flex justify-between pt-2 border-t border-pavilion-600/30">
+                  <span className="font-semibold">Total</span>
+                  <span className="text-xl font-bold text-gold-400">{formatPrice(grandTotal + bookingFee)}</span>
+                </div>
+              </div>
+            );
+          })()}
+          {grandTotal === 0 && (
           <div className="border-t border-pavilion-600/50 pt-4 mb-6">
             <div className="flex justify-between">
               <span className="font-semibold">Total</span>
-              <span className="text-xl font-bold text-gold-400">{formatPrice(grandTotal)}</span>
+              <span className="text-xl font-bold text-gold-400">{formatPrice(0)}</span>
             </div>
           </div>
+          )}
 
           {!showCheckout ? (
             <button
@@ -372,7 +395,7 @@ function OrderSummary({
                 className="w-full py-3 bg-gold-500 hover:bg-gold-600 text-pavilion-900 font-bold rounded-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {checkoutLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-                Pay {formatPrice(grandTotal)}
+                Pay {formatPrice(grandTotal + (grandTotal > 0 ? Math.ceil(grandTotal * 0.015) + 20 : 0))}
               </button>
               <button
                 type="button"
@@ -425,7 +448,7 @@ export default function EventDetailPage() {
   }, [slug]);
 
   const ticketTypes = event?.ticketTypes || [];
-  const addons = event?.addons || [];
+  const addons = (event?.addons || []).map(a => ({ ...a, ticketTypeIds: a.ticket_type_ids || a.ticketTypeIds || [] }));
   const waivers = event?.waivers || [];
 
   const totalItems = useMemo(
@@ -540,12 +563,17 @@ export default function EventDetailPage() {
         setCheckoutLoading(false);
         return;
       }
-      const ratio = (event.supervision_ratio || '1:1').split(':').map(Number);
-      const requiredAdults = Math.ceil(childCount * (ratio[0] / ratio[1]));
-      if (adultCount < requiredAdults) {
-        setCheckoutError(`At least ${requiredAdults} adult ticket(s) required for ${childCount} child ticket(s).`);
-        setCheckoutLoading(false);
-        return;
+      const ratioStr = event.supervision_ratio || '1:any';
+      if (ratioStr !== '1:any') {
+        const ratio = ratioStr.split(':').map(Number);
+        if (ratio.length === 2 && !isNaN(ratio[0]) && !isNaN(ratio[1]) && ratio[1] > 0) {
+          const requiredAdults = Math.ceil(childCount * (ratio[0] / ratio[1]));
+          if (adultCount < requiredAdults) {
+            setCheckoutError(`At least ${requiredAdults} adult ticket(s) required for ${childCount} child ticket(s).`);
+            setCheckoutLoading(false);
+            return;
+          }
+        }
       }
     }
 
@@ -777,7 +805,7 @@ export default function EventDetailPage() {
                   <AlertCircle className="w-5 h-5 text-amber-400 mt-0.5 flex-shrink-0" />
                   <p className="text-amber-200 text-sm">
                     Children under {event.supervision_child_max_age || 12} must be accompanied by at least one adult.
-                    A minimum of 1 adult ticket is required per child ticket.
+                    At least 1 adult ticket is required per order containing child tickets.
                   </p>
                 </div>
               )}
@@ -958,6 +986,8 @@ export default function EventDetailPage() {
                 onToggleWaiver={toggleWaiver}
                 addonSelections={addonSelections}
                 addons={addons}
+                termsAccepted={termsAccepted}
+                setTermsAccepted={setTermsAccepted}
               />
             </div>
           </div>
@@ -1035,7 +1065,7 @@ export default function EventDetailPage() {
                   className="flex-1 px-4 py-2.5 bg-gold-500 hover:bg-gold-600 text-pavilion-900 font-bold rounded-lg transition-all disabled:opacity-50 flex items-center justify-center gap-2 text-sm"
                 >
                   {checkoutLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-                  Pay {formatPrice(totalPrice + addonTotal)}
+                  Pay {formatPrice(totalPrice + addonTotal + (totalPrice + addonTotal > 0 ? Math.ceil((totalPrice + addonTotal) * 0.015) + 20 : 0))}
                 </button>
               </div>
             </form>

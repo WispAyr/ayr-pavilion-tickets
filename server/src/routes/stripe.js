@@ -56,13 +56,18 @@ router.post('/checkout', async (req, res) => {
         });
       }
 
-      // Parse ratio (e.g. "1:1" = 1 adult per 1 child)
-      const ratio = (event.supervision_ratio || '1:1').split(':').map(Number);
-      const requiredAdults = Math.ceil(childCount * (ratio[0] / ratio[1]));
-      if (adultCount < requiredAdults) {
-        return res.status(400).json({
-          error: `At least ${requiredAdults} adult ticket(s) required for ${childCount} child ticket(s) (${event.supervision_ratio} adult-to-child ratio).`
-        });
+      // Check ratio (e.g. "1:1" = 1 adult per 1 child, "1:any" = 1 adult for any number of kids)
+      const ratioStr = event.supervision_ratio || '1:any';
+      if (ratioStr !== '1:any') {
+        const ratio = ratioStr.split(':').map(Number);
+        if (ratio.length === 2 && !isNaN(ratio[0]) && !isNaN(ratio[1]) && ratio[1] > 0) {
+          const requiredAdults = Math.ceil(childCount * (ratio[0] / ratio[1]));
+          if (adultCount < requiredAdults) {
+            return res.status(400).json({
+              error: `At least ${requiredAdults} adult ticket(s) required for ${childCount} child ticket(s) (${ratioStr} adult-to-child ratio).`
+            });
+          }
+        }
       }
     }
 
@@ -175,6 +180,22 @@ router.post('/checkout', async (req, res) => {
 
     totalPence += addonTotal;
 
+    // Calculate booking fee (covers Stripe processing: 1.5% + 20p)
+    const bookingFeePence = Math.ceil(totalPence * 0.015) + 20;
+    totalPence += bookingFeePence;
+
+    lineItems.push({
+      price_data: {
+        currency: 'gbp',
+        product_data: {
+          name: 'Booking Fee',
+          description: 'Online booking and payment processing fee',
+        },
+        unit_amount: bookingFeePence
+      },
+      quantity: 1
+    });
+
     // Validate required waivers
     const requiredWaivers = db.prepare(`
       SELECT * FROM waivers WHERE (event_id = ? OR event_id IS NULL) AND active = 1 AND required = 1
@@ -196,6 +217,13 @@ router.post('/checkout', async (req, res) => {
     const orderRef = generateOrderRef();
     const appUrl = process.env.APP_URL || 'http://localhost:5173';
 
+    // Store order items, addons, and waivers in DB (not Stripe metadata — 500 char limit)
+    const pendingData = JSON.stringify({
+      order_items: orderItems,
+      addon_selections: validatedAddons.length > 0 ? validatedAddons : undefined,
+      waiver_acceptances: waiverAcceptances && waiverAcceptances.length > 0 ? waiverAcceptances : undefined
+    });
+
     const session = await createCheckoutSession({
       lineItems,
       customerEmail,
@@ -205,16 +233,14 @@ router.post('/checkout', async (req, res) => {
       cancelUrl: `${appUrl}/events/${event.slug}`,
       metadata: {
         event_id: String(event.id),
-        order_items: JSON.stringify(orderItems),
-        addon_selections: validatedAddons.length > 0 ? JSON.stringify(validatedAddons) : undefined,
-        waiver_acceptances: waiverAcceptances && waiverAcceptances.length > 0 ? JSON.stringify(waiverAcceptances) : undefined
+        order_ref: orderRef
       }
     });
 
     db.prepare(`
-      INSERT INTO orders (order_ref, event_id, customer_name, customer_email, customer_phone, total, status, stripe_session_id)
-      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
-    `).run(orderRef, eventId, customerName, customerEmail, customerPhone || null, totalPence, session.id);
+      INSERT INTO orders (order_ref, event_id, customer_name, customer_email, customer_phone, total, status, stripe_session_id, pending_data)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+    `).run(orderRef, eventId, customerName, customerEmail, customerPhone || null, totalPence, session.id, pendingData);
 
     res.json({ url: session.url, orderRef });
   } catch (err) {
@@ -243,13 +269,21 @@ router.post('/webhook', async (req, res) => {
         const session = event.data.object;
         const orderRef = session.metadata.order_ref;
         const eventId = parseInt(session.metadata.event_id, 10);
-        const orderItems = JSON.parse(session.metadata.order_items);
 
         const order = db.prepare('SELECT * FROM orders WHERE order_ref = ?').get(orderRef);
         if (!order) {
           console.error(`Order not found for ref: ${orderRef}`);
           break;
         }
+
+        // Parse order data from DB (preferred) or fall back to Stripe metadata
+        let pendingData = {};
+        try {
+          pendingData = order.pending_data ? JSON.parse(order.pending_data) : {};
+        } catch (e) {
+          console.error('Error parsing pending_data:', e);
+        }
+        const orderItems = pendingData.order_items || (session.metadata.order_items ? JSON.parse(session.metadata.order_items) : []);
 
         // Update order status
         db.prepare(`
@@ -288,10 +322,9 @@ router.post('/webhook', async (req, res) => {
         generateTickets();
 
         // Store addon selections
-        const addonSelectionsRaw = session.metadata.addon_selections;
-        if (addonSelectionsRaw) {
+        const addonSels = pendingData.addon_selections || (session.metadata.addon_selections ? JSON.parse(session.metadata.addon_selections) : null);
+        if (addonSels && addonSels.length > 0) {
           try {
-            const addonSels = JSON.parse(addonSelectionsRaw);
             const insertAddonSel = db.prepare(`
               INSERT INTO order_addon_selections (order_id, ticket_id, addon_id, addon_option_id, selected_option, quantity, price)
               VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -329,10 +362,9 @@ router.post('/webhook', async (req, res) => {
         }
 
         // Store waiver acceptances
-        const waiverAcceptancesRaw = session.metadata.waiver_acceptances;
-        if (waiverAcceptancesRaw) {
+        const waiverAccs = pendingData.waiver_acceptances || (session.metadata.waiver_acceptances ? JSON.parse(session.metadata.waiver_acceptances) : null);
+        if (waiverAccs && waiverAccs.length > 0) {
           try {
-            const waiverAccs = JSON.parse(waiverAcceptancesRaw);
             const insertWaiverAcc = db.prepare(`
               INSERT INTO waiver_acceptances (order_id, waiver_id, ip_address, user_agent)
               VALUES (?, ?, ?, ?)
