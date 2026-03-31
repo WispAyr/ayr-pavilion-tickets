@@ -241,6 +241,7 @@ function OrderSummary({
   addons,
   termsAccepted,
   setTermsAccepted,
+  needsAdult,
 }) {
   const selected = ticketTypes.filter((tt) => quantities[tt.id] > 0);
   const grandTotal = totalPrice + addonTotal;
@@ -320,12 +321,22 @@ function OrderSummary({
           )}
 
           {!showCheckout ? (
-            <button
-              onClick={() => setShowCheckout(true)}
-              className="w-full py-3 bg-gold-500 hover:bg-gold-600 text-pavilion-900 font-bold rounded-lg transition-all text-lg"
-            >
-              Buy Tickets
-            </button>
+            <>
+              {needsAdult && (
+                <p className="text-amber-400 text-sm text-center mb-2 flex items-center justify-center gap-1">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  Add an adult ticket to continue
+                </p>
+              )}
+              <button
+                onClick={() => setShowCheckout(true)}
+                disabled={needsAdult}
+                className="w-full py-3 bg-gold-500 hover:bg-gold-600 text-pavilion-900 font-bold rounded-lg transition-all text-lg disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Buy Tickets
+              </button>
+            </>
+
           ) : (
             <form onSubmit={onCheckout} className="space-y-3">
               <p className="text-sm text-gray-400 font-medium">Your Details</p>
@@ -391,7 +402,7 @@ function OrderSummary({
 
               <button
                 type="submit"
-                disabled={checkoutLoading || !termsAccepted}
+                disabled={checkoutLoading || !termsAccepted || needsAdult}
                 className="w-full py-3 bg-gold-500 hover:bg-gold-600 text-pavilion-900 font-bold rounded-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {checkoutLoading && <Loader2 className="w-4 h-4 animate-spin" />}
@@ -472,6 +483,24 @@ export default function EventDetailPage() {
     }, 0);
   }, [addonSelections]);
 
+  // Adult supervision check — true if child tickets selected without an adult
+  const needsAdult = useMemo(() => {
+    if (!event?.requireAdultSupervision) return false;
+    const maxChildAge = event.supervisionChildMaxAge || 12;
+    let adultCount = 0;
+    let childCount = 0;
+    for (const tt of ticketTypes) {
+      const qty = quantities[tt.id] || 0;
+      if (qty === 0) continue;
+      if (tt.ageMax != null && tt.ageMax <= maxChildAge) {
+        childCount += qty;
+      } else {
+        adultCount += qty;
+      }
+    }
+    return childCount > 0 && adultCount < 1;
+  }, [event, ticketTypes, quantities]);
+
   // Get addons relevant to selected ticket types
   const relevantAddons = useMemo(() => {
     const selectedTtIds = Object.keys(quantities).filter(id => quantities[id] > 0).map(Number);
@@ -545,8 +574,8 @@ export default function EventDetailPage() {
     setCheckoutLoading(true);
 
     // Validate adult supervision rule
-    if (event.require_adult_supervision) {
-      const maxChildAge = event.supervision_child_max_age || 12;
+    if (event.requireAdultSupervision) {
+      const maxChildAge = event.supervisionChildMaxAge || 12;
       let adultCount = 0;
       let childCount = 0;
       for (const tt of ticketTypes) {
@@ -563,7 +592,7 @@ export default function EventDetailPage() {
         setCheckoutLoading(false);
         return;
       }
-      const ratioStr = event.supervision_ratio || '1:any';
+      const ratioStr = event.supervisionRatio || '1:any';
       if (ratioStr !== '1:any') {
         const ratio = ratioStr.split(':').map(Number);
         if (ratio.length === 2 && !isNaN(ratio[0]) && !isNaN(ratio[1]) && ratio[1] > 0) {
@@ -800,11 +829,11 @@ export default function EventDetailPage() {
             {/* Ticket selection */}
             <div>
               <h2 className="text-xl font-bold mb-4">Tickets</h2>
-              {event.require_adult_supervision && (
+              {event.requireAdultSupervision && (
                 <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 mb-4 flex items-start gap-2">
                   <AlertCircle className="w-5 h-5 text-amber-400 mt-0.5 flex-shrink-0" />
                   <p className="text-amber-200 text-sm">
-                    Children under {event.supervision_child_max_age || 12} must be accompanied by at least one adult.
+                    Children under {event.supervisionChildMaxAge || 12} must be accompanied by at least one adult.
                     At least 1 adult ticket is required per order containing child tickets.
                   </p>
                 </div>
@@ -988,6 +1017,7 @@ export default function EventDetailPage() {
                 addons={addons}
                 termsAccepted={termsAccepted}
                 setTermsAccepted={setTermsAccepted}
+                needsAdult={needsAdult}
               />
             </div>
           </div>
@@ -1002,10 +1032,16 @@ export default function EventDetailPage() {
               <div>
                 <p className="text-sm text-gray-400">{totalItems} ticket{totalItems !== 1 ? 's' : ''}</p>
                 <p className="text-xl font-bold text-gold-400">{formatPrice(totalPrice + addonTotal)}</p>
+                {needsAdult && (
+                  <p className="text-amber-400 text-xs mt-0.5 flex items-center gap-1">
+                    <AlertCircle className="w-3 h-3" /> Add an adult ticket
+                  </p>
+                )}
               </div>
               <button
                 onClick={() => setShowCheckout(true)}
-                className="px-6 py-3 bg-gold-500 hover:bg-gold-600 text-pavilion-900 font-bold rounded-lg transition-all"
+                disabled={needsAdult}
+                className="px-6 py-3 bg-gold-500 hover:bg-gold-600 text-pavilion-900 font-bold rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Buy Tickets
               </button>
@@ -1061,7 +1097,7 @@ export default function EventDetailPage() {
                 </button>
                 <button
                   type="submit"
-                  disabled={checkoutLoading}
+                  disabled={checkoutLoading || needsAdult}
                   className="flex-1 px-4 py-2.5 bg-gold-500 hover:bg-gold-600 text-pavilion-900 font-bold rounded-lg transition-all disabled:opacity-50 flex items-center justify-center gap-2 text-sm"
                 >
                   {checkoutLoading && <Loader2 className="w-4 h-4 animate-spin" />}

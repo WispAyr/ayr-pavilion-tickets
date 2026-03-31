@@ -35,7 +35,7 @@ export default function EventsPage() {
 
   useEffect(() => {
     setLoading(true);
-    fetchEvents()
+    fetchEvents({ upcoming: 'true' })
       .then((data) => {
         const list = Array.isArray(data) ? data : data.events || [];
         setEvents(list);

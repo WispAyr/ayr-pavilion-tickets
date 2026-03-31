@@ -5,7 +5,7 @@ export default function Footer() {
   const location = useLocation();
 
   // Hide footer on admin and scanner pages
-  if (location.pathname.startsWith('/admin') || location.pathname.startsWith('/scan')) {
+  if (location.pathname.startsWith('/admin') || location.pathname.startsWith('/scan') || location.pathname.startsWith('/door') || location.pathname.startsWith('/skates')) {
     return null;
   }
 

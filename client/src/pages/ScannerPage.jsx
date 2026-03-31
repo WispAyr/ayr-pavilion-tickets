@@ -342,6 +342,8 @@ function ScannerInterface({ pin, userName }) {
   const [stats, setStats] = useState(null);
   const [events, setEvents] = useState([]);
   const [selectedEvent, setSelectedEvent] = useState('');
+  const [deviceName, setDeviceName] = useState(() => localStorage.getItem('scanner_device_id') || '');
+  const [showDeviceSettings, setShowDeviceSettings] = useState(false);
   const inputRef = useRef(null);
 
   // Load events list
@@ -372,10 +374,11 @@ function ScannerInterface({ pin, userName }) {
     setScanning(true);
     setResult(null);
 
+    const deviceId = localStorage.getItem('scanner_device_id') || undefined;
     console.log('[Scanner] Scanning code:', ticketCode.trim(), 'with pin:', pin ? '****' : 'NONE');
 
     try {
-      const data = await scanTicket(ticketCode.trim(), pin);
+      const data = await scanTicket(ticketCode.trim(), pin, deviceId);
       console.log('[Scanner] Response:', JSON.stringify(data));
       setResult(data);
       loadStats();
@@ -425,6 +428,24 @@ function ScannerInterface({ pin, userName }) {
             <div className="text-right">
               <p className="text-2xl font-bold text-gold-400 tabular-nums">{stats.checked_in || stats.checkedIn || 0}</p>
               <p className="text-xs text-gray-500">scanned{stats.total_tickets || stats.totalTickets ? ` / ${stats.total_tickets || stats.totalTickets}` : ''}</p>
+            </div>
+          )}
+        </div>
+
+        {/* Device name setting */}
+        <div className="mb-4">
+          <button onClick={() => setShowDeviceSettings(!showDeviceSettings)} className="text-xs text-gray-500 hover:text-gray-300 transition-colors">
+            {deviceName ? `Device: ${deviceName}` : 'Set device name'}
+          </button>
+          {showDeviceSettings && (
+            <div className="mt-2 flex gap-2">
+              <input
+                value={deviceName}
+                onChange={e => setDeviceName(e.target.value)}
+                placeholder="e.g. Front Door, Side Gate"
+                className="flex-1 px-3 py-2 bg-pavilion-800 border border-pavilion-600/50 rounded-lg text-white text-sm focus:border-gold-500 focus:outline-none"
+              />
+              <button onClick={() => { localStorage.setItem('scanner_device_id', deviceName); setShowDeviceSettings(false); }} className="px-3 py-2 bg-gold-500 text-pavilion-900 text-sm font-medium rounded-lg">Save</button>
             </div>
           )}
         </div>

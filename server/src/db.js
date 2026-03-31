@@ -251,6 +251,26 @@ function initialize() {
     db.exec('ALTER TABLE orders ADD COLUMN pending_data TEXT');
   }
 
+  // Add device_id column to scans (scanner device identity)
+  const scanCols = db.prepare("PRAGMA table_info(scans)").all().map(c => c.name);
+  if (!scanCols.includes('device_id')) {
+    db.exec('ALTER TABLE scans ADD COLUMN device_id TEXT');
+  }
+
+  // Session transfer audit log
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_transfers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL REFERENCES tickets(id),
+      from_event_id INTEGER NOT NULL REFERENCES events(id),
+      to_event_id INTEGER NOT NULL REFERENCES events(id),
+      transferred_by TEXT NOT NULL,
+      reason TEXT,
+      capacity_override INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+  `);
+
   // Seed default admin user if none exist
   const adminCount = db.prepare('SELECT COUNT(*) as count FROM admin_users').get();
   if (adminCount.count === 0) {

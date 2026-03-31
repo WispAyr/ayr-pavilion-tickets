@@ -5,6 +5,8 @@ import EventsPage from './pages/EventsPage';
 import EventDetailPage from './pages/EventDetailPage';
 import TicketViewPage from './pages/TicketViewPage';
 import ScannerPage from './pages/ScannerPage';
+import DoorPage from './pages/DoorPage';
+import SkatesPage from './pages/SkatesPage';
 import AdminLayout from './pages/admin/AdminLayout';
 import Dashboard from './pages/admin/Dashboard';
 import EventsList from './pages/admin/EventsList';
@@ -36,6 +38,8 @@ export default function App() {
           <Route path="/tickets/:code" element={<TicketViewPage />} />
           <Route path="/order/success" element={<OrderSuccessPage />} />
           <Route path="/scan" element={<ScannerPage />} />
+          <Route path="/door" element={<DoorPage />} />
+          <Route path="/skates" element={<SkatesPage />} />
           <Route path="/terms" element={<TermsPage />} />
           <Route path="/admin/forgot-password" element={<ForgotPasswordPage />} />
           <Route path="/admin/reset-password" element={<ResetPasswordPage />} />

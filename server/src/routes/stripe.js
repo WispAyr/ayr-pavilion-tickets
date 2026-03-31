@@ -76,6 +76,29 @@ router.post('/checkout', async (req, res) => {
     const lineItems = [];
     const orderItems = [];
 
+    // Check combined skater capacity (excludes spectator ticket types)
+    if (event.capacity) {
+      const allTicketTypes = db.prepare('SELECT * FROM ticket_types WHERE event_id = ?').all(eventId);
+      const totalSkatersSold = allTicketTypes
+        .filter(tt => !tt.name.toLowerCase().includes('spectator'))
+        .reduce((sum, tt) => sum + tt.sold, 0);
+      const skatersInOrder = items.reduce((sum, item) => {
+        const tt = allTicketTypes.find(t => t.id === item.ticketTypeId);
+        if (tt && !tt.name.toLowerCase().includes('spectator')) {
+          return sum + item.quantity;
+        }
+        return sum;
+      }, 0);
+      const remaining = event.capacity - totalSkatersSold;
+      if (skatersInOrder > remaining) {
+        return res.status(400).json({
+          error: remaining <= 0
+            ? 'This session is sold out — no skater spots remaining'
+            : `Only ${remaining} skater spot${remaining === 1 ? '' : 's'} remaining for this session`
+        });
+      }
+    }
+
     for (const item of items) {
       const ticketType = db.prepare('SELECT * FROM ticket_types WHERE id = ? AND event_id = ?').get(item.ticketTypeId, eventId);
 
@@ -377,10 +400,23 @@ router.post('/webhook', async (req, res) => {
           }
         }
 
-        // Check if event is now sold out
+        // Check if event is now sold out (by combined skater capacity or all types exhausted)
         const ticketTypes = db.prepare('SELECT * FROM ticket_types WHERE event_id = ?').all(eventId);
-        const allSoldOut = ticketTypes.every(tt => tt.sold >= tt.quantity);
-        if (allSoldOut) {
+        const eventData2 = db.prepare('SELECT capacity FROM events WHERE id = ?').get(eventId);
+        let isSoldOut = false;
+
+        if (eventData2.capacity) {
+          // Combined skater cap: count all non-spectator sold tickets
+          const totalSkatersSold = ticketTypes
+            .filter(tt => !tt.name.toLowerCase().includes('spectator'))
+            .reduce((sum, tt) => sum + tt.sold, 0);
+          isSoldOut = totalSkatersSold >= eventData2.capacity;
+        } else {
+          // Fallback: all ticket types individually exhausted
+          isSoldOut = ticketTypes.every(tt => tt.sold >= tt.quantity);
+        }
+
+        if (isSoldOut) {
           db.prepare("UPDATE events SET status = 'sold-out', updated_at = datetime('now') WHERE id = ?").run(eventId);
         }
 

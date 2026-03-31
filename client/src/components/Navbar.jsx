@@ -6,8 +6,8 @@ export default function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
 
-  // Hide navbar on admin pages
-  if (location.pathname.startsWith('/admin')) return null;
+  // Hide navbar on admin, scanner, door, and skates pages
+  if (location.pathname.startsWith('/admin') || location.pathname.startsWith('/scan') || location.pathname.startsWith('/door') || location.pathname.startsWith('/skates')) return null;
 
   const navLinks = [
     { to: '/events', label: 'Events' },

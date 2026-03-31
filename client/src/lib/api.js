@@ -219,11 +219,13 @@ export async function fetchTicket(code) {
 }
 
 // ─── Scanner ────────────────────────────────────────────────
-export function scanTicket(code, pin) {
+export function scanTicket(code, pin, device_id) {
+  const body = { code };
+  if (device_id) body.device_id = device_id;
   return request('/scan', {
     method: 'POST',
     headers: { 'X-Scanner-Pin': pin },
-    body: JSON.stringify({ code }),
+    body: JSON.stringify(body),
   });
 }
 

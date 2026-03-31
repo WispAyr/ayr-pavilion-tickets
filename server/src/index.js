@@ -2,6 +2,8 @@ const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 const express = require('express');
+const http = require('http');
+const { WebSocketServer } = require('ws');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
@@ -75,6 +77,7 @@ const waiversRoutes = require('./routes/waivers');
 
 const trackingRoutes = require('./routes/tracking');
 const socialRoutes = require('./routes/social');
+const doorRoutes = require('./routes/door');
 app.use('/api/track', trackingRoutes);
 app.use('/api/events', eventsRoutes);
 app.use('/api', ticketTypesRoutes);
@@ -86,6 +89,7 @@ app.use('/api/admin/login', authLimiter);
 app.use('/api/admin', adminRoutes);
 app.use('/api/stripe', stripeRoutes);
 app.use('/api', socialRoutes);
+app.use('/api/door', doorRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -104,7 +108,40 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3970;
-app.listen(PORT, () => {
+const server = http.createServer(app);
+
+// ─── WebSocket server for /ws/door ─────────────────────────
+const wss = new WebSocketServer({ noServer: true });
+const doorClients = new Set();
+
+wss.on('connection', (ws) => {
+  doorClients.add(ws);
+  ws.on('close', () => doorClients.delete(ws));
+  ws.on('error', () => doorClients.delete(ws));
+});
+
+server.on('upgrade', (req, socket, head) => {
+  if (req.url === '/ws/door') {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit('connection', ws, req);
+    });
+  } else {
+    socket.destroy();
+  }
+});
+
+// Wire broadcast into scan route
+function broadcastScan(data) {
+  const msg = JSON.stringify({ type: 'scan', ...data });
+  for (const client of doorClients) {
+    if (client.readyState === 1) { // WebSocket.OPEN
+      client.send(msg);
+    }
+  }
+}
+scanRoutes.setBroadcast(broadcastScan);
+
+server.listen(PORT, () => {
   console.log(`Ayr Pavilion Tickets API running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 });

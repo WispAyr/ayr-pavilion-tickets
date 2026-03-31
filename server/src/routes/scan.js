@@ -3,6 +3,10 @@ const router = express.Router();
 const { getDb } = require('../db');
 const { scannerAuth } = require('../middleware/auth');
 
+// WebSocket broadcast helper — set by index.js after WS server is created
+let broadcastScan = () => {};
+router.setBroadcast = (fn) => { broadcastScan = fn; };
+
 // POST /api/scan/validate - validate scanner PIN against DB
 router.post('/validate', (req, res) => {
   const db = getDb();
@@ -31,7 +35,7 @@ router.post('/validate', (req, res) => {
 router.post('/', scannerAuth, (req, res) => {
   try {
     const db = getDb();
-    let { code } = req.body;
+    let { code, device_id } = req.body;
     const scanned_by = req.scannerUser ? req.scannerUser.name : (req.body.scanned_by || null);
 
     if (!code) {
@@ -54,7 +58,7 @@ router.post('/', scannerAuth, (req, res) => {
 
     const ticket = db.prepare(`
       SELECT
-        t.id, t.code, t.status, t.holder_name, t.checked_in_at,
+        t.id, t.code, t.status, t.holder_name, t.checked_in_at, t.event_id,
         e.title AS event_title, e.date_time, e.venue,
         tt.name AS ticket_type_name,
         o.customer_name, o.order_ref
@@ -67,9 +71,11 @@ router.post('/', scannerAuth, (req, res) => {
 
     if (!ticket) {
       db.prepare(`
-        INSERT INTO scans (ticket_id, result, scanned_by)
-        VALUES (0, 'invalid', ?)
-      `).run(scanned_by || null);
+        INSERT INTO scans (ticket_id, result, scanned_by, device_id)
+        VALUES (0, 'invalid', ?, ?)
+      `).run(scanned_by || null, device_id || null);
+
+      broadcastScan({ result: 'invalid', message: 'Ticket not found', scanner: scanned_by, device_id: device_id || null, timestamp: new Date().toISOString() });
 
       return res.json({
         result: 'invalid',
@@ -79,9 +85,11 @@ router.post('/', scannerAuth, (req, res) => {
 
     if (ticket.status === 'cancelled' || ticket.status === 'refunded') {
       db.prepare(`
-        INSERT INTO scans (ticket_id, result, scanned_by)
-        VALUES (?, 'invalid', ?)
-      `).run(ticket.id, scanned_by || null);
+        INSERT INTO scans (ticket_id, result, scanned_by, device_id)
+        VALUES (?, 'invalid', ?, ?)
+      `).run(ticket.id, scanned_by || null, device_id || null);
+
+      broadcastScan({ result: 'invalid', ticket_id: ticket.id, customer_name: ticket.holder_name || ticket.customer_name, ticket_type: ticket.ticket_type_name, event: ticket.event_title, scanner: scanned_by, device_id: device_id || null, timestamp: new Date().toISOString() });
 
       return res.json({
         result: 'invalid',
@@ -96,9 +104,11 @@ router.post('/', scannerAuth, (req, res) => {
 
     if (ticket.status === 'used') {
       db.prepare(`
-        INSERT INTO scans (ticket_id, result, scanned_by)
-        VALUES (?, 'already_used', ?)
-      `).run(ticket.id, scanned_by || null);
+        INSERT INTO scans (ticket_id, result, scanned_by, device_id)
+        VALUES (?, 'already_used', ?, ?)
+      `).run(ticket.id, scanned_by || null, device_id || null);
+
+      broadcastScan({ result: 'already_used', ticket_id: ticket.id, customer_name: ticket.holder_name || ticket.customer_name, ticket_type: ticket.ticket_type_name, event: ticket.event_title, scanner: scanned_by, device_id: device_id || null, timestamp: new Date().toISOString() });
 
       return res.json({
         result: 'already_used',
@@ -119,9 +129,34 @@ router.post('/', scannerAuth, (req, res) => {
     `).run(ticket.id);
 
     db.prepare(`
-      INSERT INTO scans (ticket_id, result, scanned_by)
-      VALUES (?, 'valid', ?)
-    `).run(ticket.id, scanned_by || null);
+      INSERT INTO scans (ticket_id, result, scanned_by, device_id)
+      VALUES (?, 'valid', ?, ?)
+    `).run(ticket.id, scanned_by || null, device_id || null);
+
+    // Look up skate size addon for this ticket's order
+    const skateAddon = db.prepare(`
+      SELECT oas.selected_option, a.name AS addon_name
+      FROM order_addon_selections oas
+      JOIN addons a ON oas.addon_id = a.id
+      WHERE oas.order_id = (SELECT order_id FROM tickets WHERE id = ?)
+        AND (LOWER(a.name) LIKE '%skate%' OR LOWER(a.name) LIKE '%shoe%' OR LOWER(a.name) LIKE '%boot%')
+      LIMIT 1
+    `).get(ticket.id);
+
+    broadcastScan({
+      result: 'valid',
+      ticket_id: ticket.id,
+      customer_name: ticket.holder_name || ticket.customer_name,
+      ticket_type: ticket.ticket_type_name,
+      event: ticket.event_title,
+      event_id: ticket.event_id,
+      order_ref: ticket.order_ref,
+      scanner: scanned_by,
+      device_id: device_id || null,
+      skate_size: skateAddon ? skateAddon.selected_option : null,
+      skate_addon_name: skateAddon ? skateAddon.addon_name : null,
+      timestamp: new Date().toISOString()
+    });
 
     res.json({
       result: 'valid',
