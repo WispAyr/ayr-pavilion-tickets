@@ -1,10 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { getDb } = require('../db');
-const { scannerAuth } = require('../middleware/auth');
-
-// All door routes require scanner PIN auth
-router.use(scannerAuth);
+// Door routes are open — designed for in-venue use on trusted local network
 
 // GET /api/door/active-event — auto-detect current active event
 router.get('/active-event', (req, res) => {

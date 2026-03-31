@@ -104,7 +104,7 @@ function TransferModal({ ticket, sessions, pin, onClose, onTransferred }) {
     try {
       const res = await fetch(`${API_BASE}/door/transfer`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Scanner-Pin': pin },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ticket_id: ticket.ticketId, to_event_id: Number(targetId), reason, force }),
       });
       const data = await res.json();
@@ -182,12 +182,12 @@ function DoorInterface({ pin, userName }) {
   // Load active event
   const loadEvent = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/door/active-event`, { headers: { 'X-Scanner-Pin': pin } });
+      const res = await fetch(`${API_BASE}/door/active-event`, {});
       const data = await res.json();
       setEvent(data.event);
       if (data.event) {
         // Load recent scans
-        const scansRes = await fetch(`${API_BASE}/door/recent-scans/${data.event.id}`, { headers: { 'X-Scanner-Pin': pin } });
+        const scansRes = await fetch(`${API_BASE}/door/recent-scans/${data.event.id}`, {});
         const scansData = await scansRes.json();
         setScanFeed(scansData.scans || []);
 
@@ -274,7 +274,7 @@ function DoorInterface({ pin, userName }) {
     searchTimeout.current = setTimeout(async () => {
       try {
         const eventParam = event ? `&event_id=${event.id}` : '';
-        const res = await fetch(`${API_BASE}/door/search?q=${encodeURIComponent(searchQuery)}${eventParam}`, { headers: { 'X-Scanner-Pin': pin } });
+        const res = await fetch(`${API_BASE}/door/search?q=${encodeURIComponent(searchQuery)}${eventParam}`, {});
         const data = await res.json();
         setSearchResults(data.results || []);
       } catch {
@@ -485,11 +485,5 @@ function DoorInterface({ pin, userName }) {
 // ─── Page Wrapper ───────────────────────────────────────────
 
 export default function DoorPage() {
-  const [auth, setAuth] = useState(null);
-
-  if (!auth) {
-    return <PinEntry onAuthenticated={(pin, userName) => setAuth({ pin, userName })} />;
-  }
-
-  return <DoorInterface pin={auth.pin} userName={auth.userName} />;
+  return <DoorInterface pin={null} userName="Staff" />;
 }
