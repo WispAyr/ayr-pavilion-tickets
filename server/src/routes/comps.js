@@ -4,6 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 const { getDb } = require('../db');
 const { adminAuth } = require('../middleware/auth');
 const { sendTicketEmail, sendCompInviteEmail } = require('../services/email');
+const { getOrCreateGroupPass } = require("../services/groupPass");
 
 function generateCompCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -187,6 +188,7 @@ router.post('/:code/checkout', (req, res) => {
     }
 
     // Send confirmation email
+    const groupPassToken = getOrCreateGroupPass(eventId, customerEmail);
     sendTicketEmail({
       to: customerEmail,
       customerName,
@@ -197,7 +199,8 @@ router.post('/:code/checkout', (req, res) => {
       ticketTypeName: orderItems[0].ticketTypeName,
       tickets,
       orderRef,
-      orderId: order.id
+      orderId: order.id,
+      groupPassToken
     }).catch(err => console.error('Failed to send comp ticket email:', err.message));
 
     console.log(`Comp order ${orderRef} completed: ${tickets.length} tickets (code: ${comp.code})`);

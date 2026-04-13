@@ -5,6 +5,7 @@ const { getDb } = require('../db');
 const { createCheckoutSession, constructWebhookEvent } = require('../services/stripe');
 const { generateQrDataUrl } = require('../services/qr');
 const { sendTicketEmail } = require('../services/email');
+const { getOrCreateGroupPass } = require("../services/groupPass");
 
 function generateOrderRef() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -416,6 +417,7 @@ router.post('/webhook', async (req, res) => {
         // Send confirmation email (async, don't block webhook response)
         const eventData = db.prepare('SELECT * FROM events WHERE id = ?').get(eventId);
         if (eventData) {
+          const groupPassToken = getOrCreateGroupPass(eventId, order.customer_email);
           sendTicketEmail({
             to: order.customer_email,
             customerName: order.customer_name,
@@ -426,7 +428,8 @@ router.post('/webhook', async (req, res) => {
             ticketTypeName: orderItems[0].ticketTypeName,
             tickets,
             orderRef,
-            orderId: order.id
+            orderId: order.id,
+            groupPassToken
           }).catch(err => {
             console.error('Failed to send ticket email:', err.message);
           });

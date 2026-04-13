@@ -1,4 +1,4 @@
-const { generateQrBuffer } = require('./qr');
+const { generateQrBuffer, generateGroupPassQR } = require('./qr');
 const { getDb } = require('../db');
 
 // HTTP relay via PU2 mail relay (direct SMTP blocked on VPS)
@@ -177,7 +177,7 @@ function buildOrderSummaryBlock({ orderItems, addonDetails, bookingFee, protecti
     </table>`;
 }
 
-function buildEmailHtml({ eventTitle, dateTime, doorsOpen, venue, ticketTypeName, ticketCode, quantity, orderRef, calendarUrl, emailLogId, addonDetails, protectionOpted, protectionFee, isComp, orderItems, bookingFee, grandTotal }) {
+function buildEmailHtml({ eventTitle, dateTime, doorsOpen, venue, ticketTypeName, ticketCode, quantity, orderRef, calendarUrl, emailLogId, addonDetails, protectionOpted, protectionFee, isComp, orderItems, bookingFee, grandTotal, hasGroupPass }) {
   const eventDate = new Date(dateTime);
   const formattedDate = eventDate.toLocaleDateString('en-GB', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
@@ -271,6 +271,7 @@ function buildEmailHtml({ eventTitle, dateTime, doorsOpen, venue, ticketTypeName
                 </tr>
               </table>
 
+              ${hasGroupPass ? `              <!-- Group Pass QR -->              <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:15px;">                <tr>                  <td align="center" style="padding:20px;background-color:#1a1a0a;border-radius:12px;border:2px solid #D4A843;">                    <p style="margin:0 0 5px;color:#D4A843;font-size:14px;text-transform:uppercase;letter-spacing:2px;">&#9733; Family / Group Pass</p>                    <p style="margin:0 0 15px;color:#999;font-size:12px;">Scan once to check in all your tickets for this event</p>                    <img src="cid:groupqr" alt="Group Pass QR" width="250" height="250" style="display:block;margin:0 auto;border-radius:8px;">                  </td>                </tr>              </table>              ` : ""}
               <!-- QR Code -->
               <table width="100%" cellpadding="0" cellspacing="0">
                 <tr>
@@ -381,7 +382,7 @@ function markEmailFailed(emailLogId, error) {
   db.prepare(`UPDATE email_logs SET status = 'failed', error = ? WHERE id = ?`).run(String(error).slice(0, 500), emailLogId);
 }
 
-async function sendTicketEmail({ to, customerName, eventTitle, dateTime, doorsOpen, venue, ticketTypeName, tickets, orderRef, orderId }) {
+async function sendTicketEmail({ to, customerName, eventTitle, dateTime, doorsOpen, venue, ticketTypeName, tickets, orderRef, orderId, groupPassToken }) {
   const transporter = createTransporter();
   const db = getDb();
 
@@ -437,6 +438,13 @@ async function sendTicketEmail({ to, customerName, eventTitle, dateTime, doorsOp
     orderItemsWithPrices = ticketBreakdown;
   }
 
+  // Generate group pass QR if applicable (2+ tickets)
+  let groupPassQrBuffer = null;
+  const hasGroupPass = !!(groupPassToken && tickets.length > 1);
+  if (hasGroupPass) {
+    try { groupPassQrBuffer = await generateGroupPassQR(groupPassToken); } catch (e) { console.error("Group pass QR error:", e.message); }
+  }
+
   for (const ticket of tickets) {
     const subject = isComp ? `VIP Tickets: ${eventTitle} - ${venue}` : `Your Tickets: ${eventTitle} - ${venue}`;
 
@@ -468,7 +476,8 @@ async function sendTicketEmail({ to, customerName, eventTitle, dateTime, doorsOp
         isComp,
         orderItems: orderItemsWithPrices,
         bookingFee,
-        grandTotal
+        grandTotal,
+        hasGroupPass
       });
 
       await transporter.sendMail({
@@ -480,8 +489,9 @@ async function sendTicketEmail({ to, customerName, eventTitle, dateTime, doorsOp
           {
             filename: 'qrcode.png',
             content: qrBuffer,
-            cid: 'qrcode'
-          }
+            cid: "qrcode"
+          },
+          ...(groupPassQrBuffer ? [{ filename: "grouppass.png", content: groupPassQrBuffer, cid: "groupqr" }] : [])
         ]
       });
 

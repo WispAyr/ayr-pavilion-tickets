@@ -32,4 +32,4 @@ async function generateQrBuffer(ticketCode) {
   return buffer;
 }
 
-module.exports = { generateQrDataUrl, generateQrBuffer };
+async function generateGroupPassQR(token) {  const content = `GROUP:${token}`;  const buffer = await QRCode.toBuffer(content, {    width: 400,    margin: 3,    color: { dark: "#000000", light: "#ffffff" },    errorCorrectionLevel: "H"  });  return buffer;}module.exports = { generateQrDataUrl, generateQrBuffer, generateGroupPassQR };

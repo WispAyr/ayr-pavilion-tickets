@@ -293,6 +293,19 @@ function initialize() {
     db.exec('ALTER TABLE orders ADD COLUMN marketing_opt_in INTEGER DEFAULT 0');
   }
 
+
+  // Group passes — one QR per purchaser per event for batch check-in
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS group_passes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id INTEGER NOT NULL REFERENCES events(id),
+      email TEXT NOT NULL,
+      token TEXT UNIQUE NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_group_passes_event_email ON group_passes(event_id, email);
+  `);
+
   console.log('Database initialized successfully');
   return db;
 }

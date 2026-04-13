@@ -2,10 +2,88 @@ const express = require('express');
 const router = express.Router();
 const { getDb } = require('../db');
 const { scannerAuth } = require('../middleware/auth');
+const { getGroupPassTickets } = require('../services/groupPass');
 
 // WebSocket broadcast helper — set by index.js after WS server is created
 let broadcastScan = () => {};
 router.setBroadcast = (fn) => { broadcastScan = fn; };
+
+// Group pass batch check-in handler
+function handleGroupScan(db, token, scanned_by, device_id, expected_event_id, res) {
+  const data = getGroupPassTickets(token);
+
+  if (!data) {
+    broadcastScan({ result: 'invalid', message: 'Group pass not found', scanner: scanned_by, device_id: device_id || null, timestamp: new Date().toISOString() });
+    return res.json({ result: 'invalid', message: 'Group pass not found' });
+  }
+
+  const { tickets, groupPass } = data;
+  const validTickets = tickets.filter(t => t.status === 'valid');
+  const alreadyUsed = tickets.filter(t => t.status === 'used');
+  const total = validTickets.length + alreadyUsed.length;
+
+  // All already checked in
+  if (validTickets.length === 0 && alreadyUsed.length > 0) {
+    broadcastScan({ result: 'already_used', message: `Group pass — all ${total} already checked in`, customer_name: alreadyUsed[0].customer_name, event: alreadyUsed[0].event_title, scanner: scanned_by, device_id: device_id || null, group_pass: true, timestamp: new Date().toISOString() });
+    return res.json({
+      result: 'group_already_used',
+      message: `All ${total} tickets already checked in`,
+      checked_in_now: 0, already_used: alreadyUsed.length, total,
+      customer_name: alreadyUsed[0].customer_name,
+      event: alreadyUsed[0].event_title
+    });
+  }
+
+  // No tickets at all
+  if (validTickets.length === 0) {
+    return res.json({ result: 'invalid', message: 'No valid tickets found for this group pass' });
+  }
+
+  // Batch check-in in a transaction
+  const checkin = db.transaction(() => {
+    const updateStmt = db.prepare("UPDATE tickets SET status = 'used', checked_in_at = datetime('now') WHERE id = ?");
+    const insertScan = db.prepare("INSERT INTO scans (ticket_id, result, scanned_by, device_id) VALUES (?, 'valid', ?, ?)");
+    for (const t of validTickets) {
+      updateStmt.run(t.id);
+      insertScan.run(t.id, scanned_by || null, device_id || null);
+    }
+  });
+  checkin();
+
+  // Broadcast each individual ticket to door page
+  const wrongEvent = expected_event_id && groupPass.event_id !== expected_event_id;
+  for (const t of validTickets) {
+    broadcastScan({
+      result: 'valid',
+      ticket_id: t.id,
+      customer_name: t.holder_name || t.customer_name,
+      ticket_type: t.ticket_type_name,
+      event: t.event_title,
+      event_id: groupPass.event_id,
+      order_ref: t.order_ref,
+      scanner: scanned_by,
+      device_id: device_id || null,
+      group_pass: true,
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  return res.json({
+    result: 'group_valid',
+    message: `Checked in ${validTickets.length}/${total}${alreadyUsed.length > 0 ? ` — ${alreadyUsed.length} already scanned` : ''}`,
+    checked_in_now: validTickets.length,
+    already_used: alreadyUsed.length,
+    total,
+    wrong_event: wrongEvent || false,
+    customer_name: validTickets[0].customer_name,
+    event: validTickets[0].event_title,
+    tickets: validTickets.map(t => ({
+      holder_name: t.holder_name || t.customer_name,
+      ticket_type: t.ticket_type_name,
+      order_ref: t.order_ref
+    }))
+  });
+}
 
 // POST /api/scan/validate - validate scanner PIN against DB
 router.post('/validate', (req, res) => {
@@ -55,6 +133,13 @@ router.post('/', scannerAuth, (req, res) => {
     }
 
     const expected_event_id = req.body.expected_event_id ? parseInt(req.body.expected_event_id, 10) : null;
+
+    // Check for group pass scan
+    if (code.startsWith('GROUP:')) {
+      const groupToken = code.slice(6);
+      return handleGroupScan(db, groupToken, scanned_by, device_id, expected_event_id, res);
+    }
+
     console.log(`[SCAN] Code received: ${code}, expected event: ${expected_event_id || "any"}`);
 
     const ticket = db.prepare(`

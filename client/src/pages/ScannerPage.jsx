@@ -118,6 +118,8 @@ function ScanResult({ result, onReset }) {
   if (!result) return null;
 
   const isValid = result.result === 'valid' || result.status === 'valid' || result.valid === true;
+  const isGroupValid = result.result === "group_valid";
+  const isGroupAlreadyUsed = result.result === "group_already_used";
   const isAlreadyScanned = result.result === 'already_used' || result.status === 'already-scanned' || result.alreadyScanned === true;
 
   const isWrongEvent = isValid && result.wrong_event;
@@ -133,6 +135,16 @@ function ScanResult({ result, onReset }) {
     icon = <CheckCircle2 className="w-20 h-20 text-green-400" />;
     title = 'VALID TICKET';
     subtitle = 'Entry approved';
+  } else if (isGroupValid) {
+    bgClass = 'from-green-900/80 to-green-900/20 border-green-500/50';
+    icon = <CheckCircle2 className="w-20 h-20 text-green-400" />;
+    title = 'GROUP CHECK-IN';
+    subtitle = result.message || `Checked in ${result.checked_in_now}/${result.total}`;
+  } else if (isGroupAlreadyUsed) {
+    bgClass = 'from-amber-900/80 to-amber-900/20 border-amber-500/50';
+    icon = <AlertTriangle className="w-20 h-20 text-amber-400" />;
+    title = 'ALL ALREADY CHECKED IN';
+    subtitle = result.message || `All ${result.total} tickets already scanned`;
   } else if (isAlreadyScanned) {
     bgClass = 'from-amber-900/80 to-amber-900/20 border-amber-500/50';
     icon = <AlertTriangle className="w-20 h-20 text-amber-400" />;
@@ -152,6 +164,33 @@ function ScanResult({ result, onReset }) {
       <div className="flex justify-center mb-4">{icon}</div>
       <h2 className="text-2xl font-black tracking-wider mb-1">{title}</h2>
       <p className="text-gray-300 text-sm mb-4">{subtitle}</p>
+
+      {/* Group pass ticket list */}
+      {(isGroupValid || isGroupAlreadyUsed) && (
+        <div className="bg-pavilion-900/50 rounded-xl p-4 mb-4 text-left space-y-1 text-sm">
+          {result.customer_name && (
+            <div className="flex justify-between mb-2">
+              <span className="text-gray-400">Customer</span>
+              <span className="text-white font-semibold">{result.customer_name}</span>
+            </div>
+          )}
+          {result.event && (
+            <div className="flex justify-between mb-2">
+              <span className="text-gray-400">Event</span>
+              <span className="text-white">{result.event}</span>
+            </div>
+          )}
+          {result.tickets && result.tickets.map((t, i) => (
+            <div key={i} className="flex justify-between py-1 border-t border-pavilion-700/50">
+              <span className="text-white">{t.holder_name}</span>
+              <span className="text-gray-400">{t.ticket_type}</span>
+            </div>
+          ))}
+          {result.already_used > 0 && (
+            <p className="text-amber-400 text-xs mt-2">{result.already_used} ticket{result.already_used > 1 ? 's' : ''} already scanned earlier</p>
+          )}
+        </div>
+      )}
 
       {result.ticket && (
         <div className="bg-pavilion-900/50 rounded-xl p-4 mb-4 text-left space-y-2 text-sm">
@@ -326,6 +365,8 @@ function ScanLane({ laneId, label, result, scanning }) {
   }
 
   const isValid = result.result === 'valid' || result.status === 'valid' || result.valid === true;
+  const isGroupValid = result.result === 'group_valid';
+  const isGroupAlreadyUsed = result.result === 'group_already_used';
   const isAlreadyScanned = result.result === 'already_used' || result.status === 'already-scanned';
   const isWrongEvent = isValid && result.wrong_event;
 
@@ -334,6 +375,14 @@ function ScanLane({ laneId, label, result, scanning }) {
     bgClass = 'bg-orange-900/40'; borderClass = 'border-orange-500'; textColor = 'text-orange-400';
     icon = <AlertTriangle className="w-16 h-16 text-orange-400" />;
     title = 'WRONG SESSION';
+  } else if (isGroupValid) {
+    bgClass = 'bg-green-900/40'; borderClass = 'border-green-500'; textColor = 'text-green-400';
+    icon = <CheckCircle2 className="w-16 h-16 text-green-400" />;
+    title = `GROUP ${result.checked_in_now}/${result.total}`;
+  } else if (isGroupAlreadyUsed) {
+    bgClass = 'bg-amber-900/40'; borderClass = 'border-amber-500'; textColor = 'text-amber-400';
+    icon = <AlertTriangle className="w-16 h-16 text-amber-400" />;
+    title = 'GROUP DONE';
   } else if (isValid) {
     bgClass = 'bg-green-900/40'; borderClass = 'border-green-500'; textColor = 'text-green-400';
     icon = <CheckCircle2 className="w-16 h-16 text-green-400" />;
@@ -440,8 +489,8 @@ function UsbScannerMode({ pin, selectedEvent }) {
     try {
       const data = await scanTicket(ticketCode.trim(), pin, deviceId, selectedEvent || null);
       setLanes(prev => ({ ...prev, [laneId]: { result: data, scanning: false } }));
-      const isValid = data.result === 'valid' || data.status === 'valid';
-      autoResetLane(laneId, isValid ? 3000 : 4000);
+      const isValid = data.result === 'valid' || data.result === 'group_valid' || data.status === 'valid';
+      autoResetLane(laneId, isValid ? 4000 : 4000);
     } catch (err) {
       setLanes(prev => ({
         ...prev,
@@ -620,7 +669,7 @@ function ScannerInterface({ pin, userName }) {
 
       // Vibrate on result (mobile)
       if (navigator.vibrate) {
-        if (data.result === 'valid') navigator.vibrate(200);
+        if (data.result === 'valid' || data.result === 'group_valid') navigator.vibrate(200);
         else navigator.vibrate([100, 50, 100]);
       }
     } catch (err) {
