@@ -224,6 +224,295 @@ router.get('/hourly-pattern', adminAuth, (req, res) => {
   }
 });
 
+// GET /api/admin/stats/event-report/:eventId — Comprehensive event intelligence report
+router.get('/event-report/:eventId', adminAuth, (req, res) => {
+  try {
+    const db = getDb();
+    const eventId = req.params.eventId;
+
+    // 1. Event details
+    const event = db.prepare('SELECT * FROM events WHERE id = ?').get(eventId);
+    if (!event) return res.status(404).json({ error: 'Event not found' });
+
+    // 2. Ticket types with full breakdown
+    const ticketTypes = db.prepare(`
+      SELECT tt.id, tt.name, tt.price, tt.quantity,
+        COUNT(CASE WHEN t.status IN ('valid','used') THEN 1 END) as sold,
+        COUNT(CASE WHEN t.status = 'used' THEN 1 END) as checked_in,
+        COUNT(CASE WHEN t.status = 'valid' THEN 1 END) as valid,
+        COUNT(CASE WHEN t.status = 'cancelled' THEN 1 END) as cancelled,
+        COUNT(CASE WHEN t.status = 'refunded' THEN 1 END) as refunded
+      FROM ticket_types tt
+      LEFT JOIN tickets t ON t.ticket_type_id = tt.id
+      WHERE tt.event_id = ?
+      GROUP BY tt.id
+      ORDER BY tt.sort_order
+    `).all(eventId);
+
+    for (const tt of ticketTypes) {
+      tt.sell_through_pct = tt.quantity > 0 ? Math.round((tt.sold / tt.quantity) * 1000) / 10 : 0;
+    }
+
+    // 3. Financial summary
+    const financials = db.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN status IN ('paid','refunded','comp') THEN total ELSE 0 END), 0) as gross_revenue,
+        COALESCE(SUM(CASE WHEN status IN ('paid','refunded','comp') THEN booking_fee ELSE 0 END), 0) as booking_fees,
+        COALESCE(SUM(CASE WHEN status IN ('paid','refunded','comp') THEN refund_amount ELSE 0 END), 0) as refunds,
+        COALESCE(SUM(CASE WHEN status IN ('paid','refunded','comp') THEN protection_fee ELSE 0 END), 0) as protection_fees
+      FROM orders WHERE event_id = ?
+    `).get(eventId);
+    financials.net_revenue = financials.gross_revenue - financials.refunds;
+
+    // 4. Sales timeline — hourly buckets
+    const salesTimeline = db.prepare(`
+      SELECT strftime('%Y-%m-%d %H:00', created_at) as hour, COUNT(*) as orders, SUM(total) as revenue
+      FROM orders WHERE event_id = ? AND status = 'paid'
+      GROUP BY hour ORDER BY hour ASC
+    `).all(eventId);
+
+    // 5. Booking velocity
+    const velocityData = db.prepare(`
+      SELECT MIN(created_at) as first_sale, MAX(created_at) as last_sale, COUNT(*) as total_orders
+      FROM orders WHERE event_id = ? AND status = 'paid'
+    `).get(eventId);
+
+    const peakHourRow = db.prepare(`
+      SELECT strftime('%Y-%m-%d %H:00', created_at) as hour, COUNT(*) as cnt
+      FROM orders WHERE event_id = ? AND status = 'paid'
+      GROUP BY hour ORDER BY cnt DESC LIMIT 1
+    `).get(eventId);
+
+    let avgMinsBetween = 0;
+    if (velocityData.first_sale && velocityData.last_sale && velocityData.total_orders > 1) {
+      const firstMs = new Date(velocityData.first_sale).getTime();
+      const lastMs = new Date(velocityData.last_sale).getTime();
+      const totalHours = (lastMs - firstMs) / (1000 * 60 * 60);
+      avgMinsBetween = Math.round(((lastMs - firstMs) / (1000 * 60)) / (velocityData.total_orders - 1) * 10) / 10;
+      velocityData.total_hours_selling = Math.round(totalHours * 10) / 10;
+    } else {
+      velocityData.total_hours_selling = 0;
+    }
+    velocityData.peak_hour = peakHourRow ? peakHourRow.hour : null;
+    velocityData.avg_minutes_between_orders = avgMinsBetween;
+
+    // 6. Check-in / arrival intelligence
+    const validScans = db.prepare(`
+      SELECT s.scanned_at FROM scans s
+      JOIN tickets t ON s.ticket_id = t.id
+      WHERE t.event_id = ? AND s.result = 'valid'
+      ORDER BY s.scanned_at ASC
+    `).all(eventId);
+
+    let arrivalCurve = [];
+    let peakArrivalTime = null;
+    let earlyPct = 0, onTimePct = 0, latePct = 0;
+
+    if (validScans.length > 0 && event.doors_open) {
+      const doorsMs = new Date(event.doors_open).getTime();
+      const buckets = {};
+      let earlyCount = 0, onTimeCount = 0, lateCount = 0;
+      let maxBucketCount = 0;
+
+      for (const scan of validScans) {
+        const scanMs = new Date(scan.scanned_at).getTime();
+        const offsetMins = Math.floor((scanMs - doorsMs) / (1000 * 60));
+        const bucketKey = Math.floor(offsetMins / 15) * 15;
+        buckets[bucketKey] = (buckets[bucketKey] || 0) + 1;
+
+        if (offsetMins < 0) earlyCount++;
+        else if (offsetMins <= 30) onTimeCount++;
+        else lateCount++;
+      }
+
+      const total = validScans.length;
+      earlyPct = Math.round((earlyCount / total) * 1000) / 10;
+      onTimePct = Math.round((onTimeCount / total) * 1000) / 10;
+      latePct = Math.round((lateCount / total) * 1000) / 10;
+
+      arrivalCurve = Object.entries(buckets).map(([offset, count]) => {
+        if (count > maxBucketCount) {
+          maxBucketCount = count;
+          peakArrivalTime = `doors ${parseInt(offset) >= 0 ? '+' : ''}${offset} mins`;
+        }
+        return { offset_mins: parseInt(offset), count };
+      }).sort((a, b) => a.offset_mins - b.offset_mins);
+    }
+
+    const arrivalIntel = { arrival_curve: arrivalCurve, peak_arrival_time: peakArrivalTime, early_pct: earlyPct, on_time_pct: onTimePct, late_pct: latePct };
+
+    // 7. No-show analysis
+    const eventPassed = new Date(event.date_time) < new Date();
+    let noShows = [];
+    if (eventPassed) {
+      noShows = db.prepare(`
+        SELECT tt.name as ticket_type, COUNT(*) as no_show_count,
+          ROUND(COUNT(*) * 100.0 / NULLIF((SELECT COUNT(*) FROM tickets t2 WHERE t2.ticket_type_id = tt.id AND t2.status IN ('valid','used')), 0), 1) as no_show_pct
+        FROM tickets t
+        JOIN ticket_types tt ON t.ticket_type_id = tt.id
+        WHERE t.event_id = ? AND t.status = 'valid'
+        GROUP BY tt.id
+      `).all(eventId);
+    }
+
+    // 8. Add-on performance
+    const addons = db.prepare(`
+      SELECT a.id, a.name, a.type, a.price, a.per_ticket FROM addons a WHERE a.event_id = ? AND a.active = 1 ORDER BY a.sort_order
+    `).all(eventId);
+
+    const totalTicketsSold = ticketTypes.reduce((s, tt) => s + tt.sold, 0);
+
+    for (const addon of addons) {
+      if (addon.type === 'select') {
+        addon.options = db.prepare(`
+          SELECT ao.label, COUNT(oas.id) as count
+          FROM addon_options ao
+          LEFT JOIN order_addon_selections oas ON oas.addon_option_id = ao.id AND oas.addon_id = ?
+          WHERE ao.addon_id = ? AND ao.active = 1
+          GROUP BY ao.id ORDER BY ao.sort_order
+        `).all(addon.id, addon.id);
+        addon.total_selected = addon.options.reduce((s, o) => s + o.count, 0);
+      } else if (addon.type === 'checkbox') {
+        const sel = db.prepare('SELECT COUNT(*) as count FROM order_addon_selections WHERE addon_id = ? AND quantity > 0').get(addon.id);
+        addon.total_selected = sel.count;
+      } else if (addon.type === 'quantity') {
+        const sel = db.prepare('SELECT COALESCE(SUM(quantity), 0) as total FROM order_addon_selections WHERE addon_id = ?').get(addon.id);
+        addon.total_selected = sel.total;
+      }
+      addon.uptake_pct = totalTicketsSold > 0 ? Math.round((addon.total_selected / totalTicketsSold) * 1000) / 10 : 0;
+
+      const addonRev = db.prepare('SELECT COALESCE(SUM(price * quantity), 0) as revenue FROM order_addon_selections WHERE addon_id = ?').get(addon.id);
+      addon.revenue = addonRev.revenue;
+    }
+
+    // 9. Protection claims
+    const protectedTickets = db.prepare(`
+      SELECT COUNT(*) as count FROM orders WHERE event_id = ? AND protection_opted = 1 AND status IN ('paid','refunded','comp')
+    `).get(eventId);
+
+    const protectionRevenue = db.prepare(`
+      SELECT COALESCE(SUM(protection_fee), 0) as total FROM orders WHERE event_id = ? AND protection_opted = 1 AND status IN ('paid','refunded','comp')
+    `).get(eventId);
+
+    const claims = db.prepare(`
+      SELECT
+        COUNT(*) as total_claims,
+        COUNT(CASE WHEN pc.status = 'approved' THEN 1 END) as approved,
+        COUNT(CASE WHEN pc.status = 'denied' THEN 1 END) as denied,
+        COUNT(CASE WHEN pc.status = 'pending' THEN 1 END) as pending,
+        COALESCE(SUM(CASE WHEN pc.status = 'approved' THEN pc.refund_amount ELSE 0 END), 0) as total_refunded
+      FROM protection_claims pc
+      WHERE pc.order_id IN (SELECT id FROM orders WHERE event_id = ?)
+    `).get(eventId);
+
+    claims.total_protected_tickets = protectedTickets.count;
+    claims.protection_revenue = protectionRevenue.total;
+    claims.claim_rate = protectedTickets.count > 0 ? Math.round((claims.total_claims / protectedTickets.count) * 1000) / 10 : 0;
+
+    // 10. Customer intelligence
+    const customerEmails = db.prepare(`
+      SELECT customer_email FROM orders WHERE event_id = ? AND status IN ('paid','comp') GROUP BY customer_email
+    `).all(eventId);
+
+    let newCustomers = 0, repeatCustomers = 0;
+    for (const c of customerEmails) {
+      const prior = db.prepare(`
+        SELECT COUNT(*) as cnt FROM orders WHERE customer_email = ? AND event_id != ? AND status IN ('paid','comp')
+      `).get(c.customer_email, eventId);
+      if (prior.cnt > 0) repeatCustomers++;
+      else newCustomers++;
+    }
+
+    const optIn = db.prepare(`
+      SELECT COUNT(*) as count FROM orders WHERE event_id = ? AND marketing_opt_in = 1 AND status = 'paid'
+    `).get(eventId);
+
+    const paidOrders = db.prepare(`
+      SELECT COUNT(*) as count FROM orders WHERE event_id = ? AND status = 'paid'
+    `).get(eventId);
+
+    const avgSpend = db.prepare(`
+      SELECT COALESCE(AVG(total), 0) as avg FROM orders WHERE event_id = ? AND status = 'paid'
+    `).get(eventId);
+
+    const customerIntel = {
+      new_customers: newCustomers,
+      repeat_customers: repeatCustomers,
+      marketing_opt_in_count: optIn.count,
+      opt_in_rate: paidOrders.count > 0 ? Math.round((optIn.count / paidOrders.count) * 1000) / 10 : 0,
+      avg_spend_per_customer: Math.round(avgSpend.avg)
+    };
+
+    // 11. Scanner performance
+    const scannerPerf = db.prepare(`
+      SELECT s.scanned_by as name,
+        COUNT(*) as total_scans,
+        COUNT(CASE WHEN s.result = 'valid' THEN 1 END) as valid_scans,
+        COUNT(CASE WHEN s.result != 'valid' THEN 1 END) as invalid_scans,
+        MIN(s.scanned_at) as first_scan,
+        MAX(s.scanned_at) as last_scan
+      FROM scans s
+      JOIN tickets t ON s.ticket_id = t.id
+      WHERE t.event_id = ? AND s.scanned_by IS NOT NULL AND s.scanned_by != ''
+      GROUP BY s.scanned_by
+      ORDER BY total_scans DESC
+    `).all(eventId);
+
+    // 12. Email engagement
+    const emailEngagement = db.prepare(`
+      SELECT
+        COUNT(*) as total_sent,
+        COUNT(CASE WHEN opened_count > 0 THEN 1 END) as total_opened,
+        COUNT(CASE WHEN clicked_count > 0 THEN 1 END) as total_clicked
+      FROM email_logs
+      WHERE order_id IN (SELECT id FROM orders WHERE event_id = ?)
+    `).get(eventId);
+    emailEngagement.open_rate = emailEngagement.total_sent > 0 ? Math.round((emailEngagement.total_opened / emailEngagement.total_sent) * 1000) / 10 : 0;
+    emailEngagement.click_rate = emailEngagement.total_sent > 0 ? Math.round((emailEngagement.total_clicked / emailEngagement.total_sent) * 1000) / 10 : 0;
+
+    // 13. Order manifest
+    const manifest = db.prepare(`
+      SELECT o.order_ref, o.customer_name, o.customer_email, o.customer_phone, o.total, o.status, o.created_at
+      FROM orders o WHERE o.event_id = ? AND o.status IN ('paid','comp','refunded')
+      ORDER BY o.created_at ASC
+    `).all(eventId);
+
+    for (const order of manifest) {
+      order.tickets = db.prepare(`
+        SELECT t.code, tt.name as ticket_type, t.status, t.checked_in_at
+        FROM tickets t JOIN ticket_types tt ON t.ticket_type_id = tt.id
+        WHERE t.order_id = (SELECT id FROM orders WHERE order_ref = ? LIMIT 1)
+      `).all(order.order_ref);
+
+      order.addons = db.prepare(`
+        SELECT a.name, oas.selected_option, oas.quantity
+        FROM order_addon_selections oas
+        JOIN addons a ON oas.addon_id = a.id
+        WHERE oas.order_id = (SELECT id FROM orders WHERE order_ref = ? LIMIT 1)
+      `).all(order.order_ref);
+    }
+
+    res.json({
+      event,
+      ticket_types: ticketTypes,
+      financials,
+      sales_timeline: salesTimeline,
+      booking_velocity: velocityData,
+      arrival_intelligence: arrivalIntel,
+      no_shows: noShows,
+      addons,
+      protection_claims: claims,
+      customer_intelligence: customerIntel,
+      scanner_performance: scannerPerf,
+      email_engagement: emailEngagement,
+      manifest
+    });
+  } catch (err) {
+    console.error('Event report error:', err.message);
+    res.status(500).json({ error: 'Failed to generate event report' });
+  }
+});
+
 module.exports = router;
 
 // GET /api/admin/stats/event/:eventId — Full event operations view

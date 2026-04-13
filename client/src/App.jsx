@@ -5,6 +5,7 @@ import EventsPage from './pages/EventsPage';
 import EventDetailPage from './pages/EventDetailPage';
 import TicketViewPage from './pages/TicketViewPage';
 import ScannerPage from './pages/ScannerPage';
+import ScannerTestPage from './pages/ScannerTestPage';
 import DoorPage from './pages/DoorPage';
 import SkatesPage from './pages/SkatesPage';
 import AdminLayout from './pages/admin/AdminLayout';
@@ -14,6 +15,8 @@ import EventForm from './pages/admin/EventForm';
 import OrdersList from './pages/admin/OrdersList';
 import LoginPage from './pages/admin/LoginPage';
 import EmailsList from './pages/admin/EmailsList';
+import ClaimsPage from './pages/admin/ClaimsPage';
+import CompsPage from './pages/admin/CompsPage';
 import LiveDoorPage from './pages/admin/LiveDoorPage';
 import ScannerUsersPage from './pages/admin/ScannerUsersPage';
 import StatsPage from './pages/admin/StatsPage';
@@ -23,7 +26,12 @@ import ForgotPasswordPage from './pages/admin/ForgotPasswordPage';
 import ResetPasswordPage from './pages/admin/ResetPasswordPage';
 import EventOpsPage from './pages/admin/EventOpsPage';
 import TermsPage from './pages/TermsPage';
+import TicketProtectionPage from './pages/TicketProtectionPage';
+import EventReportPage from "./pages/admin/EventReportPage";
 import OrderSuccessPage from './pages/OrderSuccessPage';
+import EventPerformancePage from './pages/admin/EventPerformancePage';
+import FinancialsPage from './pages/admin/FinancialsPage';
+import MarketingPage from './pages/admin/MarketingPage';
 
 export default function App() {
   return (
@@ -38,9 +46,12 @@ export default function App() {
           <Route path="/tickets/:code" element={<TicketViewPage />} />
           <Route path="/order/success" element={<OrderSuccessPage />} />
           <Route path="/scan" element={<ScannerPage />} />
+          <Route path="/scan/test" element={<ScannerTestPage />} />
           <Route path="/door" element={<DoorPage />} />
           <Route path="/skates" element={<SkatesPage />} />
+          <Route path="/admin/event-report/:eventId" element={<EventReportPage />} />
           <Route path="/terms" element={<TermsPage />} />
+          <Route path="/ticket-protection" element={<TicketProtectionPage />} />
           <Route path="/admin/forgot-password" element={<ForgotPasswordPage />} />
           <Route path="/admin/reset-password" element={<ResetPasswordPage />} />
 
@@ -51,7 +62,12 @@ export default function App() {
             <Route path="events/:id/edit" element={<EventForm />} />
             <Route path="orders" element={<OrdersList />} />
             <Route path="emails" element={<EmailsList />} />
+            <Route path="claims" element={<ClaimsPage />} />
+            <Route path="comps" element={<CompsPage />} />
             <Route path="stats" element={<StatsPage />} />
+            <Route path="performance" element={<EventPerformancePage />} />
+            <Route path="financials" element={<FinancialsPage />} />
+            <Route path="marketing" element={<MarketingPage />} />
             <Route path="events/:eventId/ops" element={<EventOpsPage />} />
             <Route path="users" element={<UsersPage />} />
             <Route path="profile" element={<ProfilePage />} />

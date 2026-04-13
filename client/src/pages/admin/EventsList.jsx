@@ -9,8 +9,19 @@ import {
   Trash2,
   Search,
   BarChart3,
+  Printer,
+  Archive,
+  FileCheck,
+  CheckCircle,
 } from 'lucide-react';
 import { fetchEvents, deleteEvent } from '../../lib/api';
+
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
+
+function getHeaders() {
+  const token = localStorage.getItem('admin_token');
+  return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+}
 
 function formatDate(dateStr) {
   return new Date(dateStr).toLocaleDateString('en-GB', {
@@ -52,6 +63,10 @@ export default function EventsList() {
   const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [deleting, setDeleting] = useState(null);
+  const [timeView, setTimeView] = useState('upcoming');
+  const [retiring, setRetiring] = useState(false);
+  const [closing, setClosing] = useState(null);
+  const [toast, setToast] = useState(null);
 
   useEffect(() => {
     loadEvents();
@@ -81,11 +96,59 @@ export default function EventsList() {
     }
   }
 
+  async function handleRetirePast() {
+    if (!confirm('Retire all past events still showing as on-sale or sold-out?')) return;
+    setRetiring(true);
+    try {
+      const res = await fetch(`${API_BASE}/admin/events/retire-past`, {
+        method: 'POST',
+        headers: getHeaders(),
+      });
+      if (!res.ok) throw new Error('Failed to retire events');
+      loadEvents();
+    } catch (err) {
+      alert('Retire failed: ' + err.message);
+    } finally {
+      setRetiring(false);
+    }
+  }
+
+  async function handleCloseEvent(id) {
+    setClosing(id);
+    try {
+      const res = await fetch(`${API_BASE}/admin/events/${id}/close-event`, {
+        method: 'POST',
+        headers: getHeaders(),
+      });
+      if (!res.ok) throw new Error('Failed to close event');
+      setToast('Report sent!');
+      setTimeout(() => setToast(null), 3000);
+      loadEvents();
+    } catch (err) {
+      alert('Close failed: ' + err.message);
+    } finally {
+      setClosing(null);
+    }
+  }
+
+  function isPastEvent(event) {
+    const eventDate = new Date(event.date || event.dateTime);
+    const now = new Date();
+    return eventDate < now || event.status === 'completed';
+  }
+
+  const pastEventsStillActive = events.filter(
+    (e) => isPastEvent(e) && (e.status === 'on-sale' || e.status === 'sold-out')
+  );
+
   const statuses = ['all', ...new Set(events.map((e) => e.status).filter(Boolean))];
 
   const filtered = events.filter((e) => {
     if (filter !== 'all' && e.status !== filter) return false;
     if (search && !e.title.toLowerCase().includes(search.toLowerCase())) return false;
+    const past = isPastEvent(e);
+    if (timeView === 'upcoming' && past) return false;
+    if (timeView === 'past' && !past) return false;
     return true;
   });
 
@@ -117,6 +180,43 @@ export default function EventsList() {
           <Plus className="w-4 h-4" />
           Create Event
         </Link>
+      </div>
+
+      {/* Toast */}
+      {toast && (
+        <div className="fixed top-20 right-4 z-50 flex items-center gap-2 px-4 py-3 bg-green-500/20 border border-green-500/30 rounded-lg text-green-400 text-sm animate-fade-in">
+          <CheckCircle className="w-4 h-4" />
+          {toast}
+        </div>
+      )}
+
+      {/* Past / Upcoming toggle */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex gap-1 bg-pavilion-800 border border-pavilion-600/50 rounded-lg p-1">
+          {['upcoming', 'past'].map((v) => (
+            <button
+              key={v}
+              onClick={() => setTimeView(v)}
+              className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all capitalize ${
+                timeView === v
+                  ? 'bg-gold-500 text-pavilion-900'
+                  : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              {v}
+            </button>
+          ))}
+        </div>
+        {timeView === 'upcoming' && pastEventsStillActive.length > 0 && (
+          <button
+            onClick={handleRetirePast}
+            disabled={retiring}
+            className="flex items-center gap-2 px-3 py-2 bg-pavilion-700 border border-pavilion-600/50 rounded-lg text-sm text-gray-300 hover:text-white hover:bg-pavilion-600 transition-all disabled:opacity-50"
+          >
+            {retiring ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Archive className="w-3.5 h-3.5" />}
+            Retire Past Events ({pastEventsStillActive.length})
+          </button>
+        )}
       </div>
 
       {/* Filters */}
@@ -180,6 +280,29 @@ export default function EventsList() {
                   <BarChart3 className="w-3.5 h-3.5" />
                   Ops
                 </Link>
+                
+                <Link
+                  to={`/admin/event-report/${event.id}`}
+                  target="_blank"
+                  className="flex items-center gap-1.5 px-3 py-2 bg-pavilion-700 border border-pavilion-600/50 rounded-lg text-sm text-gray-300 hover:text-white hover:bg-pavilion-600 transition-all"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  Report
+                </Link>
+                {isPastEvent(event) && event.status !== 'completed' && (
+                  <button
+                    onClick={() => handleCloseEvent(event.id)}
+                    disabled={closing === event.id}
+                    className="flex items-center gap-1.5 px-3 py-2 bg-green-500/10 border border-green-500/20 rounded-lg text-sm text-green-400 hover:bg-green-500/20 transition-all disabled:opacity-50"
+                  >
+                    {closing === event.id ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <FileCheck className="w-3.5 h-3.5" />
+                    )}
+                    Close & Report
+                  </button>
+                )}
                 <Link
                   to={`/admin/events/${event.id}/edit`}
                   className="flex items-center gap-1.5 px-3 py-2 bg-pavilion-700 border border-pavilion-600/50 rounded-lg text-sm text-gray-300 hover:text-white hover:bg-pavilion-600 transition-all"

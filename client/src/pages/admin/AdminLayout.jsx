@@ -11,10 +11,16 @@ import {
   Mail,
   DoorOpen,
   Shield,
+  ShieldCheck,
+  Gift,
   BarChart3,
   Users,
   UserCircle,
   ChevronUp,
+  Footprints,
+  TrendingUp,
+  Banknote,
+  Megaphone,
 } from 'lucide-react';
 import { isAdminLoggedIn, adminLogout, getAdminRole, getAdminDisplayName } from '../../lib/api';
 
@@ -23,12 +29,18 @@ function buildNav(role) {
     { to: '/admin', icon: LayoutDashboard, label: 'Dashboard', exact: true },
     { to: '/admin/events', icon: CalendarDays, label: 'Events' },
     { to: '/admin/orders', icon: ShoppingCart, label: 'Orders' },
-    { to: '/admin/stats', icon: BarChart3, label: 'Analytics' },
+    { to: '/admin/performance', icon: TrendingUp, label: 'Performance' },
+    { to: '/admin/marketing', icon: Megaphone, label: 'Marketing' },
     { to: '/admin/emails', icon: Mail, label: 'Emails' },
+    { to: '/admin/claims', icon: ShieldCheck, label: 'Claims' },
+    { to: '/admin/comps', icon: Gift, label: 'Comps' },
     { to: '/admin/scanner-users', icon: Shield, label: 'Scanner PINs' },
     { to: '/admin/door', icon: DoorOpen, label: 'Live Door' },
+    { to: '/door', icon: DoorOpen, label: 'Door Operator', external: true },
+    { to: '/skates', icon: Footprints, label: 'Skate Prep', external: true },
   ];
   if (role === 'owner') {
+    items.push({ to: '/admin/financials', icon: Banknote, label: 'Financials' });
     items.push({ to: '/admin/users', icon: Users, label: 'Users' });
   }
   return items;
@@ -67,6 +79,16 @@ export default function AdminLayout() {
       {navItems.map((item) => {
         const Icon = item.icon;
         const active = isActive(item);
+        if (item.external) {
+          return (
+            <a key={item.to} href={item.to} target="_blank" rel="noopener noreferrer" onClick={onNavigate}
+              className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-gray-400 hover:text-white hover:bg-pavilion-700 border border-transparent">
+              <Icon className="w-4 h-4" />
+              {item.label}
+              <span className="ml-auto text-xs text-gray-600">↗</span>
+            </a>
+          );
+        }
         return (
           <Link key={item.to} to={item.to} onClick={onNavigate}
             className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${

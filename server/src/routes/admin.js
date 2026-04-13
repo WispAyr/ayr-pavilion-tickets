@@ -5,7 +5,7 @@ const bcryptjs = require('bcryptjs');
 const { getDb } = require('../db');
 const { adminAuth, ownerOnly, adminOrOwner } = require('../middleware/auth');
 const { createRefund } = require('../services/stripe');
-const { resendEmail, sendPasswordResetEmail } = require('../services/email');
+const { resendEmail, sendPasswordResetEmail, sendEventReportEmail } = require('../services/email');
 const crypto = require('crypto');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'default-secret';
@@ -41,7 +41,7 @@ router.post('/login', (req, res) => {
       { expiresIn: '7d' }
     );
 
-    res.json({ token, username: user.username, role: user.role, displayName: user.display_name });
+    res.json({ token, username: user.username, role: user.role, displayName: user.display_name, canSeeFinancials: !!user.can_see_financials });
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Login failed' });
@@ -101,7 +101,7 @@ router.post('/reset-password', (req, res) => {
 // GET /api/admin/profile
 router.get('/profile', adminAuth, (req, res) => {
   const db = getDb();
-  const user = db.prepare('SELECT id, username, email, display_name, role, last_login, created_at FROM admin_users WHERE id = ?').get(req.admin.userId);
+  const user = db.prepare('SELECT id, username, email, display_name, role, can_see_financials, last_login, created_at FROM admin_users WHERE id = ?').get(req.admin.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
   res.json(user);
 });
@@ -143,7 +143,7 @@ router.put('/profile/password', adminAuth, (req, res) => {
 // GET /api/admin/users
 router.get('/users', adminAuth, ownerOnly, (req, res) => {
   const db = getDb();
-  const users = db.prepare('SELECT id, username, email, display_name, role, active, last_login, created_at FROM admin_users ORDER BY created_at ASC').all();
+  const users = db.prepare('SELECT id, username, email, display_name, role, active, can_see_financials, last_login, created_at FROM admin_users ORDER BY created_at ASC').all();
   res.json(users);
 });
 
@@ -169,7 +169,7 @@ router.post('/users', adminAuth, ownerOnly, (req, res) => {
 
 // PUT /api/admin/users/:id
 router.put('/users/:id', adminAuth, ownerOnly, (req, res) => {
-  const { display_name, email, role, active } = req.body;
+  const { display_name, email, role, active, can_see_financials } = req.body;
   const db = getDb();
   const user = db.prepare('SELECT * FROM admin_users WHERE id = ?').get(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -190,8 +190,9 @@ router.put('/users/:id', adminAuth, ownerOnly, (req, res) => {
     email = COALESCE(?, email),
     role = COALESCE(?, role),
     active = COALESCE(?, active),
+    can_see_financials = COALESCE(?, can_see_financials),
     updated_at = datetime('now')
-    WHERE id = ?`).run(display_name || null, email || null, role || null, active !== undefined ? active : null, req.params.id);
+    WHERE id = ?`).run(display_name || null, email || null, role || null, active !== undefined ? active : null, can_see_financials !== undefined ? (can_see_financials ? 1 : 0) : null, req.params.id);
 
   res.json({ message: 'User updated' });
 });
@@ -816,6 +817,373 @@ router.post('/orders/:id/add-addon', adminAuth, (req, res) => {
   } catch (err) {
     console.error('Add addon error:', err);
     res.status(500).json({ error: err.message || 'Failed to add addon to order' });
+  }
+});
+
+// POST /api/admin/events/:eventId/close-event — Close event and send report
+router.post('/events/:eventId/close-event', adminAuth, async (req, res) => {
+  try {
+    const db = getDb();
+    const { eventId } = req.params;
+
+    const event = db.prepare('SELECT * FROM events WHERE id = ?').get(eventId);
+    if (!event) return res.status(404).json({ error: 'Event not found' });
+
+    // Set event status to completed
+    db.prepare("UPDATE events SET status = 'completed', updated_at = datetime('now') WHERE id = ?").run(eventId);
+
+    // Build the report by calling the stats logic internally
+    const statsRoutes = require('./stats');
+    // Use a fake req/res to get the report data
+    const reportData = await new Promise((resolve, reject) => {
+      const fakeReq = { params: { eventId }, admin: req.admin };
+      const fakeRes = {
+        json: (data) => resolve(data),
+        status: (code) => ({ json: (data) => reject(new Error(data.error || 'Report generation failed')) })
+      };
+      // Find the event-report handler
+      const layer = statsRoutes.stack.find(l => l.route && l.route.path === '/event-report/:eventId');
+      if (layer) {
+        layer.route.stack[layer.route.stack.length - 1].handle(fakeReq, fakeRes, (err) => { if (err) reject(err); });
+      } else {
+        reject(new Error('Event report route not found'));
+      }
+    });
+
+    // Send the report email to the admin who closed it
+    const adminUser = db.prepare('SELECT email FROM admin_users WHERE id = ?').get(req.admin.userId);
+    if (adminUser && adminUser.email) {
+      sendEventReportEmail({ to: adminUser.email, reportData })
+        .catch(err => console.error('Failed to send event report email:', err.message));
+    }
+
+    res.json({ message: `Event "${event.title}" closed successfully`, report: reportData });
+  } catch (err) {
+    console.error('Close event error:', err);
+    res.status(500).json({ error: err.message || 'Failed to close event' });
+  }
+});
+
+// POST /api/admin/events/retire-past — Auto-complete past events
+router.post('/events/retire-past', adminAuth, (req, res) => {
+  try {
+    const db = getDb();
+
+    const pastEvents = db.prepare(`
+      SELECT id, title, date_time FROM events
+      WHERE date_time < datetime('now', '-4 hours')
+      AND status IN ('on-sale', 'sold-out')
+    `).all();
+
+    if (pastEvents.length === 0) {
+      return res.json({ message: 'No past events to retire', retired: [] });
+    }
+
+    const update = db.prepare("UPDATE events SET status = 'completed', updated_at = datetime('now') WHERE id = ?");
+    const retireAll = db.transaction(() => {
+      for (const evt of pastEvents) {
+        update.run(evt.id);
+      }
+    });
+    retireAll();
+
+    res.json({
+      message: `${pastEvents.length} event(s) retired`,
+      retired: pastEvents.map(e => ({ id: e.id, title: e.title, date_time: e.date_time }))
+    });
+  } catch (err) {
+    console.error('Retire past events error:', err);
+    res.status(500).json({ error: 'Failed to retire past events' });
+  }
+});
+
+// GET /api/admin/marketing/customers — Opted-in customer list
+router.get('/marketing/customers', adminAuth, (req, res) => {
+  try {
+    const db = getDb();
+
+    const customers = db.prepare(`
+      SELECT
+        o.customer_name as name,
+        o.customer_email as email,
+        MAX(o.customer_phone) as phone,
+        COUNT(*) as total_orders,
+        SUM(o.total) as total_spent,
+        MIN(o.created_at) as first_order,
+        MAX(o.created_at) as last_order,
+        GROUP_CONCAT(DISTINCT e.title || ' (' || date(e.date_time) || ')') as events
+      FROM orders o
+      JOIN events e ON o.event_id = e.id
+      WHERE o.marketing_opt_in = 1 AND o.status = 'paid'
+      GROUP BY o.customer_email
+      ORDER BY last_order DESC
+    `).all();
+
+    for (const c of customers) {
+      c.avg_spend = c.total_orders > 0 ? Math.round(c.total_spent / c.total_orders) : 0;
+      c.is_repeat = c.total_orders > 1;
+      c.events = c.events ? c.events.split(',') : [];
+    }
+
+    res.json(customers);
+  } catch (err) {
+    console.error('Marketing customers error:', err);
+    res.status(500).json({ error: 'Failed to load marketing customers' });
+  }
+});
+
+// GET /api/admin/marketing/insights — Marketing analytics
+router.get('/marketing/insights', adminAuth, (req, res) => {
+  try {
+    const db = getDb();
+
+    const totalOptedIn = db.prepare(`
+      SELECT COUNT(DISTINCT customer_email) as count FROM orders WHERE marketing_opt_in = 1 AND status = 'paid'
+    `).get();
+
+    const totalPaidOrders = db.prepare("SELECT COUNT(*) as count FROM orders WHERE status = 'paid'").get();
+
+    const revenueFromOptedIn = db.prepare(`
+      SELECT COALESCE(SUM(total), 0) as total FROM orders WHERE marketing_opt_in = 1 AND status = 'paid'
+    `).get();
+
+    const repeatCustomers = db.prepare(`
+      SELECT COUNT(*) as count FROM (
+        SELECT customer_email, COUNT(*) as cnt FROM orders
+        WHERE marketing_opt_in = 1 AND status = 'paid'
+        GROUP BY customer_email HAVING cnt > 1
+      )
+    `).get();
+
+    const avgOrdersPerCustomer = db.prepare(`
+      SELECT COALESCE(AVG(cnt), 0) as avg FROM (
+        SELECT COUNT(*) as cnt FROM orders
+        WHERE marketing_opt_in = 1 AND status = 'paid'
+        GROUP BY customer_email
+      )
+    `).get();
+
+    const topEvents = db.prepare(`
+      SELECT e.title, COUNT(*) as order_count
+      FROM orders o JOIN events e ON o.event_id = e.id
+      WHERE o.marketing_opt_in = 1 AND o.status = 'paid'
+      GROUP BY e.id ORDER BY order_count DESC LIMIT 5
+    `).all();
+
+    res.json({
+      total_opted_in: totalOptedIn.count,
+      opt_in_rate: totalPaidOrders.count > 0 ? Math.round((totalOptedIn.count / totalPaidOrders.count) * 1000) / 10 : 0,
+      repeat_rate: totalOptedIn.count > 0 ? Math.round((repeatCustomers.count / totalOptedIn.count) * 1000) / 10 : 0,
+      avg_orders_per_customer: Math.round(avgOrdersPerCustomer.avg * 10) / 10,
+      total_revenue_from_opted_in: revenueFromOptedIn.total,
+      top_events: topEvents
+    });
+  } catch (err) {
+    console.error('Marketing insights error:', err);
+    res.status(500).json({ error: 'Failed to load marketing insights' });
+  }
+});
+
+// GET /api/admin/marketing/customers/:email — Full customer history
+router.get('/marketing/customers/:email', adminAuth, (req, res) => {
+  try {
+    const db = getDb();
+    const email = decodeURIComponent(req.params.email);
+
+    const orders = db.prepare(`
+      SELECT o.id, o.order_ref, o.total, o.status, o.created_at, o.booking_fee, o.protection_opted, o.protection_fee,
+        e.title as event_title, e.date_time as event_date,
+        o.customer_name, o.customer_phone
+      FROM orders o
+      JOIN events e ON o.event_id = e.id
+      WHERE LOWER(o.customer_email) = LOWER(?)
+      ORDER BY o.created_at DESC
+    `).all(email);
+
+    for (const order of orders) {
+      order.tickets = db.prepare(`
+        SELECT t.code, tt.name as ticket_type, t.status, t.checked_in_at
+        FROM tickets t JOIN ticket_types tt ON t.ticket_type_id = tt.id
+        WHERE t.order_id = ?
+      `).all(order.id);
+
+      order.addons = db.prepare(`
+        SELECT a.name, oas.selected_option, oas.quantity, oas.price
+        FROM order_addon_selections oas JOIN addons a ON oas.addon_id = a.id
+        WHERE oas.order_id = ?
+      `).all(order.id);
+
+      order.emails = db.prepare(`
+        SELECT status, subject, opened_count, clicked_count, sent_at
+        FROM email_logs WHERE order_id = ?
+      `).all(order.id);
+    }
+
+    res.json({
+      email,
+      name: orders[0]?.customer_name || null,
+      phone: orders[0]?.customer_phone || null,
+      total_orders: orders.length,
+      total_spent: orders.reduce((s, o) => s + (o.status === 'paid' ? o.total : 0), 0),
+      orders
+    });
+  } catch (err) {
+    console.error('Customer detail error:', err);
+    res.status(500).json({ error: 'Failed to load customer details' });
+  }
+});
+
+// GET /api/admin/performance/events — Operational metrics per event
+router.get('/performance/events', adminAuth, (req, res) => {
+  try {
+    const db = getDb();
+
+    const events = db.prepare(`
+      SELECT e.id, e.title, e.date_time, e.status, e.venue, e.doors_open
+      FROM events e
+      WHERE e.status IN ('completed', 'sold-out', 'on-sale')
+      AND EXISTS (SELECT 1 FROM orders WHERE event_id = e.id AND status = 'paid')
+      ORDER BY e.date_time DESC
+    `).all();
+
+    const results = [];
+    for (const event of events) {
+      const ttStats = db.prepare(`
+        SELECT SUM(tt.quantity) as total_capacity,
+          COUNT(CASE WHEN t.status IN ('valid','used') THEN 1 END) as sold,
+          COUNT(CASE WHEN t.status = 'used' THEN 1 END) as checked_in,
+          COUNT(CASE WHEN t.status = 'valid' THEN 1 END) as no_shows
+        FROM ticket_types tt
+        LEFT JOIN tickets t ON t.ticket_type_id = tt.id
+        WHERE tt.event_id = ?
+      `).get(event.id);
+
+      const addonStats = db.prepare(`
+        SELECT COUNT(DISTINCT oas.id) as addon_selections, COUNT(DISTINCT t.id) as ticket_count
+        FROM tickets t
+        LEFT JOIN order_addon_selections oas ON oas.order_id = t.order_id
+        WHERE t.event_id = ? AND t.status IN ('valid','used')
+      `).get(event.id);
+
+      const protClaims = db.prepare(`
+        SELECT
+          COUNT(CASE WHEN o.protection_opted = 1 THEN 1 END) as protected_orders,
+          (SELECT COUNT(*) FROM protection_claims pc WHERE pc.order_id IN (SELECT id FROM orders WHERE event_id = ?)) as claims
+        FROM orders o WHERE o.event_id = ? AND o.status IN ('paid','refunded','comp')
+      `).get(event.id, event.id);
+
+      // Avg arrival offset
+      let avgArrivalOffset = null;
+      if (event.doors_open) {
+        const arrivalData = db.prepare(`
+          SELECT AVG((julianday(s.scanned_at) - julianday(?)) * 24 * 60) as avg_offset
+          FROM scans s JOIN tickets t ON s.ticket_id = t.id
+          WHERE t.event_id = ? AND s.result = 'valid'
+        `).get(event.doors_open, event.id);
+        avgArrivalOffset = arrivalData.avg_offset !== null ? Math.round(arrivalData.avg_offset * 10) / 10 : null;
+      }
+
+      const sold = ttStats.sold || 0;
+      const capacity = ttStats.total_capacity || 0;
+      const checkedIn = ttStats.checked_in || 0;
+      const noShows = ttStats.no_shows || 0;
+
+      results.push({
+        id: event.id,
+        title: event.title,
+        date_time: event.date_time,
+        status: event.status,
+        sell_through_pct: capacity > 0 ? Math.round((sold / capacity) * 1000) / 10 : 0,
+        checkin_rate: sold > 0 ? Math.round((checkedIn / sold) * 1000) / 10 : 0,
+        no_show_pct: sold > 0 ? Math.round((noShows / sold) * 1000) / 10 : 0,
+        addon_uptake_pct: addonStats.ticket_count > 0 ? Math.round((addonStats.addon_selections / addonStats.ticket_count) * 1000) / 10 : 0,
+        protection_claim_rate: protClaims.protected_orders > 0 ? Math.round((protClaims.claims / protClaims.protected_orders) * 1000) / 10 : 0,
+        avg_arrival_offset_mins: avgArrivalOffset
+      });
+    }
+
+    res.json(results);
+  } catch (err) {
+    console.error('Performance events error:', err);
+    res.status(500).json({ error: 'Failed to load event performance' });
+  }
+});
+
+// GET /api/admin/financials/overview — Financial overview across all events
+router.get('/financials/overview', adminAuth, (req, res) => {
+  try {
+    const db = getDb();
+
+    const totals = db.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN status IN ('paid','refunded','comp') THEN total ELSE 0 END), 0) as total_revenue,
+        COALESCE(SUM(CASE WHEN status IN ('paid','refunded','comp') THEN booking_fee ELSE 0 END), 0) as total_fees,
+        COALESCE(SUM(CASE WHEN status IN ('paid','refunded','comp') THEN refund_amount ELSE 0 END), 0) as total_refunds,
+        COALESCE(SUM(CASE WHEN status IN ('paid','refunded','comp') THEN protection_fee ELSE 0 END), 0) as total_protection_fees
+      FROM orders
+    `).get();
+
+    const claimsPaid = db.prepare(`
+      SELECT COALESCE(SUM(CASE WHEN status = 'approved' THEN refund_amount ELSE 0 END), 0) as total
+      FROM protection_claims
+    `).get();
+
+    totals.total_protection_claims_paid = claimsPaid.total;
+    totals.net_revenue = totals.total_revenue - totals.total_refunds;
+
+    // Per event breakdown
+    const perEvent = db.prepare(`
+      SELECT e.id, e.title, e.date_time,
+        COALESCE(SUM(CASE WHEN o.status IN ('paid','refunded','comp') THEN o.total ELSE 0 END), 0) as revenue,
+        COALESCE(SUM(CASE WHEN o.status IN ('paid','refunded','comp') THEN o.booking_fee ELSE 0 END), 0) as fees,
+        COALESCE(SUM(CASE WHEN o.status IN ('paid','refunded','comp') THEN o.refund_amount ELSE 0 END), 0) as refunds,
+        COALESCE(SUM(CASE WHEN o.status IN ('paid','refunded','comp') THEN o.protection_fee ELSE 0 END), 0) as protection_revenue
+      FROM events e
+      LEFT JOIN orders o ON o.event_id = e.id
+      GROUP BY e.id
+      HAVING revenue > 0
+      ORDER BY e.date_time DESC
+    `).all();
+
+    for (const evt of perEvent) {
+      const evtClaims = db.prepare(`
+        SELECT COALESCE(SUM(CASE WHEN pc.status = 'approved' THEN pc.refund_amount ELSE 0 END), 0) as paid
+        FROM protection_claims pc
+        WHERE pc.order_id IN (SELECT id FROM orders WHERE event_id = ?)
+      `).get(evt.id);
+      evt.claims_paid = evtClaims.paid;
+      evt.net = evt.revenue - evt.refunds;
+    }
+
+    // Revenue by ticket type across all events
+    const byTicketType = db.prepare(`
+      SELECT tt.name, SUM(tt.price * sub.cnt) as revenue, SUM(sub.cnt) as sold
+      FROM ticket_types tt
+      JOIN (
+        SELECT ticket_type_id, COUNT(*) as cnt FROM tickets WHERE status IN ('valid','used') GROUP BY ticket_type_id
+      ) sub ON sub.ticket_type_id = tt.id
+      GROUP BY tt.name
+      ORDER BY revenue DESC
+    `).all();
+
+    // Avg order value by event
+    const avgOrderByEvent = db.prepare(`
+      SELECT e.title, COALESCE(AVG(o.total), 0) as avg_order_value, COUNT(o.id) as order_count
+      FROM orders o JOIN events e ON o.event_id = e.id
+      WHERE o.status = 'paid'
+      GROUP BY e.id
+      ORDER BY e.date_time DESC
+    `).all();
+
+    res.json({
+      ...totals,
+      per_event: perEvent,
+      revenue_by_ticket_type: byTicketType,
+      avg_order_by_event: avgOrderByEvent
+    });
+  } catch (err) {
+    console.error('Financials overview error:', err);
+    res.status(500).json({ error: 'Failed to load financial overview' });
   }
 });
 

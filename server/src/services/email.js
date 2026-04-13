@@ -980,4 +980,377 @@ async function sendCompInviteEmail({ to, recipientName, eventTitle, dateTime, ve
   });
 }
 
-module.exports = { sendTicketEmail, resendEmail, sendRefundEmail, sendPasswordResetEmail, sendProtectionEmail, sendCompInviteEmail, buildGoogleCalendarUrl };
+/**
+ * Send comprehensive event report email
+ */
+async function sendEventReportEmail({ to, reportData }) {
+  const transporter = createTransporter();
+  const r = reportData;
+  const event = r.event;
+
+  const eventDate = new Date(event.date_time);
+  const formattedDate = eventDate.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const formattedTime = eventDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+  const totalSold = r.ticket_types.reduce((s, tt) => s + tt.sold, 0);
+  const totalCapacity = r.ticket_types.reduce((s, tt) => s + tt.quantity, 0);
+  const totalCheckedIn = r.ticket_types.reduce((s, tt) => s + tt.checked_in, 0);
+  const totalNoShows = r.no_shows.reduce((s, ns) => s + ns.no_show_count, 0);
+  const checkinRate = totalSold > 0 ? Math.round((totalCheckedIn / totalSold) * 1000) / 10 : 0;
+  const noShowRate = totalSold > 0 ? Math.round((totalNoShows / totalSold) * 1000) / 10 : 0;
+
+  const fmtMoney = (pence) => '&pound;' + (pence / 100).toFixed(2);
+  const fmtMoneyPlain = (pence) => '\u00a3' + (pence / 100).toFixed(2);
+
+  // Build ticket type rows
+  let ticketTypeRows = '';
+  for (const tt of r.ticket_types) {
+    const revenue = tt.sold * tt.price;
+    const barWidth = Math.min(Math.max(tt.sell_through_pct, 0), 100);
+    ticketTypeRows += `
+      <tr>
+        <td style="padding:10px 12px;color:#fff;font-size:13px;border-bottom:1px solid #2a2a4a;">${tt.name}</td>
+        <td style="padding:10px 8px;color:#D4A843;font-size:13px;text-align:right;border-bottom:1px solid #2a2a4a;">${fmtMoney(tt.price)}</td>
+        <td style="padding:10px 8px;color:#fff;font-size:13px;text-align:center;border-bottom:1px solid #2a2a4a;">${tt.sold}/${tt.quantity}</td>
+        <td style="padding:10px 8px;color:#4ade80;font-size:13px;text-align:center;border-bottom:1px solid #2a2a4a;">${tt.checked_in}</td>
+        <td style="padding:10px 8px;color:${tt.sold > 0 && tt.valid > 0 ? '#ff6b6b' : '#999'};font-size:13px;text-align:center;border-bottom:1px solid #2a2a4a;">${tt.valid}</td>
+        <td style="padding:10px 8px;color:#D4A843;font-size:13px;text-align:right;border-bottom:1px solid #2a2a4a;">${fmtMoney(revenue)}</td>
+      </tr>
+      <tr>
+        <td colspan="6" style="padding:0 12px 8px;">
+          <table width="100%" cellpadding="0" cellspacing="0"><tr>
+            <td style="background-color:#2a2a4a;border-radius:3px;height:6px;">
+              <table cellpadding="0" cellspacing="0" style="width:${barWidth}%;"><tr><td style="background-color:#D4A843;border-radius:3px;height:6px;"></td></tr></table>
+            </td>
+          </tr></table>
+        </td>
+      </tr>`;
+  }
+
+  // Sales timeline heatmap
+  let timelineHtml = '';
+  if (r.sales_timeline.length > 0) {
+    const maxOrders = Math.max(...r.sales_timeline.map(h => h.orders));
+    let timelineCells = '';
+    for (const h of r.sales_timeline.slice(-24)) {
+      const opacity = maxOrders > 0 ? Math.max(0.15, h.orders / maxOrders) : 0.15;
+      const hourLabel = h.hour.split(' ')[1] || h.hour;
+      timelineCells += `
+        <td style="padding:4px 2px;text-align:center;vertical-align:bottom;">
+          <table width="100%" cellpadding="0" cellspacing="0"><tr>
+            <td style="background-color:rgba(212,168,67,${opacity});border-radius:3px;padding:6px 2px;">
+              <span style="color:#fff;font-size:10px;font-weight:bold;">${h.orders}</span>
+            </td>
+          </tr></table>
+          <span style="color:#666;font-size:9px;">${hourLabel}</span>
+        </td>`;
+    }
+    timelineHtml = `
+      <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:10px;">
+        <tr>${timelineCells}</tr>
+      </table>`;
+  }
+
+  // Arrival curve
+  let arrivalHtml = '';
+  if (r.arrival_intelligence.arrival_curve.length > 0) {
+    const maxArrival = Math.max(...r.arrival_intelligence.arrival_curve.map(b => b.count));
+    let arrivalCells = '';
+    for (const bucket of r.arrival_intelligence.arrival_curve) {
+      const heightPct = maxArrival > 0 ? Math.max(5, Math.round((bucket.count / maxArrival) * 100)) : 5;
+      const color = bucket.offset_mins < 0 ? '#579bfc' : bucket.offset_mins <= 30 ? '#4ade80' : '#ff6b6b';
+      arrivalCells += `
+        <td style="padding:2px;text-align:center;vertical-align:bottom;width:${Math.max(30, Math.floor(100 / r.arrival_intelligence.arrival_curve.length))}px;">
+          <table width="100%" cellpadding="0" cellspacing="0" style="height:80px;"><tr>
+            <td style="vertical-align:bottom;">
+              <table width="100%" cellpadding="0" cellspacing="0"><tr>
+                <td style="background-color:${color};border-radius:3px 3px 0 0;height:${heightPct}%;min-height:4px;padding:2px 0;text-align:center;">
+                  <span style="color:#fff;font-size:9px;">${bucket.count}</span>
+                </td>
+              </tr></table>
+            </td>
+          </tr></table>
+          <span style="color:#666;font-size:8px;">${bucket.offset_mins >= 0 ? '+' : ''}${bucket.offset_mins}m</span>
+        </td>`;
+    }
+    arrivalHtml = `
+      <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:10px;">
+        <tr>${arrivalCells}</tr>
+      </table>
+      <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:8px;">
+        <tr>
+          <td style="text-align:center;">
+            <span style="display:inline-block;width:10px;height:10px;background:#579bfc;border-radius:2px;"></span>
+            <span style="color:#999;font-size:10px;margin-right:12px;"> Early</span>
+            <span style="display:inline-block;width:10px;height:10px;background:#4ade80;border-radius:2px;"></span>
+            <span style="color:#999;font-size:10px;margin-right:12px;"> On-time</span>
+            <span style="display:inline-block;width:10px;height:10px;background:#ff6b6b;border-radius:2px;"></span>
+            <span style="color:#999;font-size:10px;"> Late</span>
+          </td>
+        </tr>
+      </table>`;
+  }
+
+  // Addon rows
+  let addonSection = '';
+  if (r.addons && r.addons.length > 0) {
+    let addonRows = '';
+    for (const addon of r.addons) {
+      addonRows += `
+        <tr>
+          <td style="padding:8px 12px;color:#fff;font-size:13px;border-bottom:1px solid #2a2a4a;">${addon.name}</td>
+          <td style="padding:8px 8px;color:#fff;font-size:13px;text-align:center;border-bottom:1px solid #2a2a4a;">${addon.total_selected || 0}</td>
+          <td style="padding:8px 8px;color:#D4A843;font-size:13px;text-align:center;border-bottom:1px solid #2a2a4a;">${addon.uptake_pct}%</td>
+          <td style="padding:8px 8px;color:#D4A843;font-size:13px;text-align:right;border-bottom:1px solid #2a2a4a;">${fmtMoney(addon.revenue || 0)}</td>
+        </tr>`;
+      if (addon.type === 'select' && addon.options) {
+        for (const opt of addon.options) {
+          addonRows += `
+            <tr>
+              <td style="padding:4px 12px 4px 28px;color:#999;font-size:12px;">&bull; ${opt.label}</td>
+              <td style="padding:4px 8px;color:#999;font-size:12px;text-align:center;">${opt.count}</td>
+              <td colspan="2"></td>
+            </tr>`;
+        }
+      }
+    }
+    addonSection = `
+      <!-- Add-on Performance -->
+      <tr><td style="padding:20px 30px 0;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#12122a;border-radius:12px;overflow:hidden;">
+          <tr><td colspan="4" style="padding:15px 15px 8px;"><span style="color:#D4A843;font-size:12px;text-transform:uppercase;letter-spacing:2px;font-weight:bold;">Add-on Performance</span></td></tr>
+          <tr>
+            <td style="padding:8px 12px;color:#888;font-size:11px;text-transform:uppercase;border-bottom:1px solid #2a2a4a;">Add-on</td>
+            <td style="padding:8px 8px;color:#888;font-size:11px;text-transform:uppercase;text-align:center;border-bottom:1px solid #2a2a4a;">Selected</td>
+            <td style="padding:8px 8px;color:#888;font-size:11px;text-transform:uppercase;text-align:center;border-bottom:1px solid #2a2a4a;">Uptake</td>
+            <td style="padding:8px 8px;color:#888;font-size:11px;text-transform:uppercase;text-align:right;border-bottom:1px solid #2a2a4a;">Revenue</td>
+          </tr>
+          ${addonRows}
+        </table>
+      </td></tr>`;
+  }
+
+  // Protection section
+  let protectionSection = '';
+  if (r.protection_claims && r.protection_claims.total_protected_tickets > 0) {
+    protectionSection = `
+      <!-- Protection & Claims -->
+      <tr><td style="padding:20px 30px 0;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#12122a;border-radius:12px;overflow:hidden;">
+          <tr><td colspan="2" style="padding:15px 15px 8px;"><span style="color:#D4A843;font-size:12px;text-transform:uppercase;letter-spacing:2px;font-weight:bold;">Protection &amp; Claims</span></td></tr>
+          <tr><td style="padding:8px 15px;color:#999;font-size:13px;">Protected Tickets</td><td style="padding:8px 15px;color:#fff;font-size:13px;text-align:right;">${r.protection_claims.total_protected_tickets}</td></tr>
+          <tr><td style="padding:8px 15px;color:#999;font-size:13px;">Protection Revenue</td><td style="padding:8px 15px;color:#D4A843;font-size:13px;text-align:right;">${fmtMoney(r.protection_claims.protection_revenue)}</td></tr>
+          <tr><td style="padding:8px 15px;color:#999;font-size:13px;">Claims Submitted</td><td style="padding:8px 15px;color:#fff;font-size:13px;text-align:right;">${r.protection_claims.total_claims}</td></tr>
+          <tr><td style="padding:8px 15px;color:#999;font-size:13px;">Approved / Denied / Pending</td><td style="padding:8px 15px;color:#fff;font-size:13px;text-align:right;">${r.protection_claims.approved} / ${r.protection_claims.denied} / ${r.protection_claims.pending}</td></tr>
+          <tr><td style="padding:8px 15px;color:#999;font-size:13px;">Total Refunded via Claims</td><td style="padding:8px 15px;color:#ff6b6b;font-size:13px;text-align:right;">${fmtMoney(r.protection_claims.total_refunded)}</td></tr>
+          <tr><td style="padding:8px 15px;color:#999;font-size:13px;">Claim Rate</td><td style="padding:8px 15px;color:#fff;font-size:13px;text-align:right;">${r.protection_claims.claim_rate}%</td></tr>
+        </table>
+      </td></tr>`;
+  }
+
+  // Scanner performance
+  let scannerSection = '';
+  if (r.scanner_performance && r.scanner_performance.length > 0) {
+    let scannerRows = '';
+    for (const sc of r.scanner_performance) {
+      const successRate = sc.total_scans > 0 ? Math.round((sc.valid_scans / sc.total_scans) * 1000) / 10 : 0;
+      scannerRows += `
+        <tr>
+          <td style="padding:8px 12px;color:#fff;font-size:13px;border-bottom:1px solid #2a2a4a;">${sc.name}</td>
+          <td style="padding:8px 8px;color:#fff;font-size:13px;text-align:center;border-bottom:1px solid #2a2a4a;">${sc.total_scans}</td>
+          <td style="padding:8px 8px;color:#4ade80;font-size:13px;text-align:center;border-bottom:1px solid #2a2a4a;">${successRate}%</td>
+        </tr>`;
+    }
+    scannerSection = `
+      <!-- Scanner Performance -->
+      <tr><td style="padding:20px 30px 0;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#12122a;border-radius:12px;overflow:hidden;">
+          <tr><td colspan="3" style="padding:15px 15px 8px;"><span style="color:#D4A843;font-size:12px;text-transform:uppercase;letter-spacing:2px;font-weight:bold;">Scanner Performance</span></td></tr>
+          <tr>
+            <td style="padding:8px 12px;color:#888;font-size:11px;text-transform:uppercase;border-bottom:1px solid #2a2a4a;">Scanner</td>
+            <td style="padding:8px 8px;color:#888;font-size:11px;text-transform:uppercase;text-align:center;border-bottom:1px solid #2a2a4a;">Scans</td>
+            <td style="padding:8px 8px;color:#888;font-size:11px;text-transform:uppercase;text-align:center;border-bottom:1px solid #2a2a4a;">Success Rate</td>
+          </tr>
+          ${scannerRows}
+        </table>
+      </td></tr>`;
+  }
+
+  const subject = `Event Report: ${event.title} — ${formattedDate}`;
+  const timestamp = new Date().toLocaleString('en-GB', { dateStyle: 'full', timeStyle: 'short' });
+
+  const html = `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#0a0a1a;font-family:'Helvetica Neue',Arial,sans-serif;color:#ffffff;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#0a0a1a;padding:20px 0;">
+    <tr><td align="center">
+      <table width="650" cellpadding="0" cellspacing="0" style="max-width:650px;width:100%;background-color:#1a1a2e;border-radius:16px;overflow:hidden;">
+
+        <!-- Header -->
+        <tr>
+          <td style="background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);padding:40px 30px;text-align:center;border-bottom:2px solid #D4A843;">
+            <p style="margin:0 0 5px;color:#888;font-size:11px;letter-spacing:3px;text-transform:uppercase;">Ayr Pavilion</p>
+            <h1 style="margin:0 0 8px;font-size:24px;color:#D4A843;letter-spacing:2px;text-transform:uppercase;">Event Report</h1>
+            <h2 style="margin:0 0 5px;font-size:20px;color:#fff;">${event.title}</h2>
+            <p style="margin:0;color:#999;font-size:14px;">${formattedDate} at ${formattedTime} &mdash; ${event.venue || 'Ayr Pavilion'}</p>
+          </td>
+        </tr>
+
+        <!-- Hero KPI Strip -->
+        <tr>
+          <td style="padding:25px 20px;background-color:#12122a;">
+            <table width="100%" cellpadding="0" cellspacing="0">
+              <tr>
+                <td width="25%" style="text-align:center;padding:10px 5px;">
+                  <span style="color:#888;font-size:10px;text-transform:uppercase;letter-spacing:1px;">Gross Revenue</span><br>
+                  <span style="color:#D4A843;font-size:26px;font-weight:bold;">${fmtMoney(r.financials.gross_revenue)}</span>
+                </td>
+                <td width="25%" style="text-align:center;padding:10px 5px;border-left:1px solid #2a2a4a;">
+                  <span style="color:#888;font-size:10px;text-transform:uppercase;letter-spacing:1px;">Tickets Sold</span><br>
+                  <span style="color:#fff;font-size:26px;font-weight:bold;">${totalSold}</span>
+                  <span style="color:#666;font-size:14px;">/${totalCapacity}</span>
+                </td>
+                <td width="25%" style="text-align:center;padding:10px 5px;border-left:1px solid #2a2a4a;">
+                  <span style="color:#888;font-size:10px;text-transform:uppercase;letter-spacing:1px;">Check-in Rate</span><br>
+                  <span style="color:#4ade80;font-size:26px;font-weight:bold;">${checkinRate}%</span>
+                </td>
+                <td width="25%" style="text-align:center;padding:10px 5px;border-left:1px solid #2a2a4a;">
+                  <span style="color:#888;font-size:10px;text-transform:uppercase;letter-spacing:1px;">No-show Rate</span><br>
+                  <span style="color:${noShowRate > 10 ? '#ff6b6b' : '#4ade80'};font-size:26px;font-weight:bold;">${noShowRate}%</span>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- Financial Summary -->
+        <tr><td style="padding:20px 30px 0;">
+          <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#12122a;border-radius:12px;overflow:hidden;">
+            <tr><td colspan="2" style="padding:15px 15px 8px;"><span style="color:#D4A843;font-size:12px;text-transform:uppercase;letter-spacing:2px;font-weight:bold;">Financial Summary</span></td></tr>
+            <tr><td style="padding:8px 15px;color:#999;font-size:14px;">Ticket Revenue</td><td style="padding:8px 15px;color:#D4A843;font-size:14px;text-align:right;font-weight:bold;">${fmtMoney(r.financials.gross_revenue)}</td></tr>
+            <tr><td style="padding:8px 15px;color:#999;font-size:14px;">Booking Fees</td><td style="padding:8px 15px;color:#D4A843;font-size:14px;text-align:right;">${fmtMoney(r.financials.booking_fees)}</td></tr>
+            <tr><td style="padding:8px 15px;color:#999;font-size:14px;">Protection Fees</td><td style="padding:8px 15px;color:#D4A843;font-size:14px;text-align:right;">${fmtMoney(r.financials.protection_fees)}</td></tr>
+            <tr><td style="padding:8px 15px;color:#999;font-size:14px;">Refunds</td><td style="padding:8px 15px;color:#ff6b6b;font-size:14px;text-align:right;">-${fmtMoney(r.financials.refunds)}</td></tr>
+            <tr><td style="padding:12px 15px;color:#fff;font-size:16px;font-weight:bold;border-top:1px solid #2a2a4a;">Net Revenue</td><td style="padding:12px 15px;color:#D4A843;font-size:20px;font-weight:bold;text-align:right;border-top:1px solid #2a2a4a;">${fmtMoney(r.financials.net_revenue)}</td></tr>
+          </table>
+        </td></tr>
+
+        <!-- Ticket Types -->
+        <tr><td style="padding:20px 30px 0;">
+          <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#12122a;border-radius:12px;overflow:hidden;">
+            <tr><td colspan="6" style="padding:15px 15px 8px;"><span style="color:#D4A843;font-size:12px;text-transform:uppercase;letter-spacing:2px;font-weight:bold;">Ticket Types</span></td></tr>
+            <tr>
+              <td style="padding:8px 12px;color:#888;font-size:11px;text-transform:uppercase;border-bottom:1px solid #2a2a4a;">Type</td>
+              <td style="padding:8px 8px;color:#888;font-size:11px;text-transform:uppercase;text-align:right;border-bottom:1px solid #2a2a4a;">Price</td>
+              <td style="padding:8px 8px;color:#888;font-size:11px;text-transform:uppercase;text-align:center;border-bottom:1px solid #2a2a4a;">Sold</td>
+              <td style="padding:8px 8px;color:#888;font-size:11px;text-transform:uppercase;text-align:center;border-bottom:1px solid #2a2a4a;">In</td>
+              <td style="padding:8px 8px;color:#888;font-size:11px;text-transform:uppercase;text-align:center;border-bottom:1px solid #2a2a4a;">No-show</td>
+              <td style="padding:8px 8px;color:#888;font-size:11px;text-transform:uppercase;text-align:right;border-bottom:1px solid #2a2a4a;">Revenue</td>
+            </tr>
+            ${ticketTypeRows}
+          </table>
+        </td></tr>
+
+        <!-- Sales Timeline -->
+        <tr><td style="padding:20px 30px 0;">
+          <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#12122a;border-radius:12px;overflow:hidden;">
+            <tr><td style="padding:15px 15px 8px;"><span style="color:#D4A843;font-size:12px;text-transform:uppercase;letter-spacing:2px;font-weight:bold;">Sales Timeline</span></td></tr>
+            <tr><td style="padding:0 15px;">
+              <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="padding:6px 0;color:#999;font-size:12px;">First Sale</td>
+                  <td style="padding:6px 0;color:#fff;font-size:12px;text-align:right;">${r.booking_velocity.first_sale || 'N/A'}</td>
+                </tr>
+                <tr>
+                  <td style="padding:6px 0;color:#999;font-size:12px;">Last Sale</td>
+                  <td style="padding:6px 0;color:#fff;font-size:12px;text-align:right;">${r.booking_velocity.last_sale || 'N/A'}</td>
+                </tr>
+                <tr>
+                  <td style="padding:6px 0;color:#999;font-size:12px;">Peak Booking Hour</td>
+                  <td style="padding:6px 0;color:#D4A843;font-size:12px;text-align:right;">${r.booking_velocity.peak_hour || 'N/A'}</td>
+                </tr>
+                <tr>
+                  <td style="padding:6px 0;color:#999;font-size:12px;">Avg Time Between Orders</td>
+                  <td style="padding:6px 0;color:#fff;font-size:12px;text-align:right;">${r.booking_velocity.avg_minutes_between_orders} mins</td>
+                </tr>
+              </table>
+            </td></tr>
+            <tr><td style="padding:8px 15px 15px;">${timelineHtml}</td></tr>
+          </table>
+        </td></tr>
+
+        <!-- Arrival Intelligence -->
+        <tr><td style="padding:20px 30px 0;">
+          <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#12122a;border-radius:12px;overflow:hidden;">
+            <tr><td style="padding:15px 15px 8px;"><span style="color:#D4A843;font-size:12px;text-transform:uppercase;letter-spacing:2px;font-weight:bold;">Arrival Intelligence</span></td></tr>
+            <tr><td style="padding:0 15px;">
+              <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="padding:6px 0;color:#999;font-size:12px;">Peak Arrival</td>
+                  <td style="padding:6px 0;color:#D4A843;font-size:12px;text-align:right;">${r.arrival_intelligence.peak_arrival_time || 'N/A'}</td>
+                </tr>
+                <tr>
+                  <td style="padding:6px 0;color:#999;font-size:12px;">Early / On-time / Late</td>
+                  <td style="padding:6px 0;color:#fff;font-size:12px;text-align:right;">
+                    <span style="color:#579bfc;">${r.arrival_intelligence.early_pct}%</span> /
+                    <span style="color:#4ade80;">${r.arrival_intelligence.on_time_pct}%</span> /
+                    <span style="color:#ff6b6b;">${r.arrival_intelligence.late_pct}%</span>
+                  </td>
+                </tr>
+              </table>
+            </td></tr>
+            <tr><td style="padding:8px 15px 15px;">${arrivalHtml}</td></tr>
+          </table>
+        </td></tr>
+
+        ${addonSection}
+
+        ${protectionSection}
+
+        <!-- Customer Intelligence -->
+        <tr><td style="padding:20px 30px 0;">
+          <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#12122a;border-radius:12px;overflow:hidden;">
+            <tr><td colspan="2" style="padding:15px 15px 8px;"><span style="color:#D4A843;font-size:12px;text-transform:uppercase;letter-spacing:2px;font-weight:bold;">Customer Intelligence</span></td></tr>
+            <tr><td style="padding:8px 15px;color:#999;font-size:13px;">New Customers</td><td style="padding:8px 15px;color:#fff;font-size:13px;text-align:right;">${r.customer_intelligence.new_customers}</td></tr>
+            <tr><td style="padding:8px 15px;color:#999;font-size:13px;">Repeat Customers</td><td style="padding:8px 15px;color:#D4A843;font-size:13px;text-align:right;">${r.customer_intelligence.repeat_customers}</td></tr>
+            <tr><td style="padding:8px 15px;color:#999;font-size:13px;">Marketing Opt-in Rate</td><td style="padding:8px 15px;color:#fff;font-size:13px;text-align:right;">${r.customer_intelligence.opt_in_rate}%</td></tr>
+            <tr><td style="padding:8px 15px;color:#999;font-size:13px;">Avg Spend per Customer</td><td style="padding:8px 15px;color:#D4A843;font-size:13px;text-align:right;">${fmtMoney(r.customer_intelligence.avg_spend_per_customer)}</td></tr>
+          </table>
+        </td></tr>
+
+        ${scannerSection}
+
+        <!-- Email Engagement -->
+        <tr><td style="padding:20px 30px 0;">
+          <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#12122a;border-radius:12px;overflow:hidden;">
+            <tr><td colspan="2" style="padding:15px 15px 8px;"><span style="color:#D4A843;font-size:12px;text-transform:uppercase;letter-spacing:2px;font-weight:bold;">Email Engagement</span></td></tr>
+            <tr><td style="padding:8px 15px;color:#999;font-size:13px;">Emails Sent</td><td style="padding:8px 15px;color:#fff;font-size:13px;text-align:right;">${r.email_engagement.total_sent}</td></tr>
+            <tr><td style="padding:8px 15px;color:#999;font-size:13px;">Open Rate</td><td style="padding:8px 15px;color:#4ade80;font-size:13px;text-align:right;">${r.email_engagement.open_rate}%</td></tr>
+            <tr><td style="padding:8px 15px;color:#999;font-size:13px;">Click Rate</td><td style="padding:8px 15px;color:#4ade80;font-size:13px;text-align:right;">${r.email_engagement.click_rate}%</td></tr>
+          </table>
+        </td></tr>
+
+        <!-- Footer -->
+        <tr>
+          <td style="padding:25px 30px;background-color:#12122a;border-top:1px solid #2a2a4a;text-align:center;margin-top:20px;">
+            <p style="margin:0 0 8px;color:#666;font-size:12px;">Report generated at ${timestamp}</p>
+            <p style="margin:0;color:#444;font-size:11px;">Ayr Pavilion Ticketing System</p>
+          </td>
+        </tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM || 'Ayr Pavilion <no-reply@ayrpavilion.com>',
+    to,
+    subject,
+    html
+  });
+}
+
+module.exports = { sendTicketEmail, resendEmail, sendRefundEmail, sendPasswordResetEmail, sendProtectionEmail, sendCompInviteEmail, sendEventReportEmail, buildGoogleCalendarUrl };
