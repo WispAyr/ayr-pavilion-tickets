@@ -13,6 +13,19 @@ import { canSeeFinancials } from '../../lib/api';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
+function camelizeKeys(obj) {
+  if (Array.isArray(obj)) return obj.map(camelizeKeys);
+  if (obj && typeof obj === 'object') {
+    return Object.fromEntries(
+      Object.entries(obj).map(([k, v]) => [
+        k.replace(/_([a-z])/g, (_, c) => c.toUpperCase()),
+        camelizeKeys(v)
+      ])
+    );
+  }
+  return obj;
+}
+
 function getHeaders() {
   const token = localStorage.getItem('admin_token');
   return { Authorization: `Bearer ${token}` };
@@ -45,7 +58,7 @@ export default function FinancialsPage() {
     try {
       const res = await fetch(`${API_BASE}/admin/financials/overview`, { headers: getHeaders() });
       if (!res.ok) throw new Error('Failed to load financial data');
-      setData(await res.json());
+      setData(camelizeKeys(await res.json()));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -135,6 +148,31 @@ export default function FinancialsPage() {
         <KPICard icon={Shield} label="Protection Revenue" value={formatMoney(overview.protectionRevenue ?? 0)} color="text-white" />
         <KPICard icon={TrendingUp} label="Net Revenue" value={formatMoney(overview.netRevenue ?? 0)} color="text-green-400" />
       </div>
+
+      {/* Protection Claims */}
+      {(overview.protectionClaimsPaid != null || overview.protectionRevenue != null) && (
+        <div className="bg-pavilion-800 border border-pavilion-600/50 rounded-xl overflow-hidden">
+          <div className="p-5 border-b border-pavilion-600/50">
+            <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider">Protection Claims</h3>
+          </div>
+          <div className="p-5 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-400">Protection Revenue</span>
+              <span className="text-sm text-gold-400 font-medium">{formatMoney(overview.protectionRevenue ?? 0)}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-400">Claims Paid Out</span>
+              <span className="text-sm text-red-400 font-medium">{formatMoney(overview.protectionClaimsPaid ?? 0)}</span>
+            </div>
+            <div className="border-t border-pavilion-600/50 pt-3 flex items-center justify-between">
+              <span className="text-sm text-gray-400 font-medium">Net Protection</span>
+              <span className={`text-sm font-bold ${((overview.protectionRevenue ?? 0) - (overview.protectionClaimsPaid ?? 0)) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {formatMoney((overview.protectionRevenue ?? 0) - (overview.protectionClaimsPaid ?? 0))}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Revenue by event */}
       <div className="bg-pavilion-800 border border-pavilion-600/50 rounded-xl overflow-hidden">

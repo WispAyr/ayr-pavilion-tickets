@@ -15,6 +15,19 @@ import {
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
+function camelizeKeys(obj) {
+  if (Array.isArray(obj)) return obj.map(camelizeKeys);
+  if (obj && typeof obj === 'object') {
+    return Object.fromEntries(
+      Object.entries(obj).map(([k, v]) => [
+        k.replace(/_([a-z])/g, (_, c) => c.toUpperCase()),
+        camelizeKeys(v)
+      ])
+    );
+  }
+  return obj;
+}
+
 function getHeaders() {
   const token = localStorage.getItem('admin_token');
   return { Authorization: `Bearer ${token}` };
@@ -59,8 +72,8 @@ export default function MarketingPage() {
       ]);
       if (!insRes.ok) throw new Error('Failed to load insights');
       if (!custRes.ok) throw new Error('Failed to load customers');
-      setInsights(await insRes.json());
-      setCustomers(await custRes.json());
+      setInsights(camelizeKeys(await insRes.json()));
+      setCustomers(camelizeKeys(await custRes.json()));
     } catch (err) {
       setError(err.message);
     } finally {

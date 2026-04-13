@@ -864,6 +864,59 @@ router.post('/events/:eventId/close-event', adminAuth, async (req, res) => {
   }
 });
 
+// POST /api/admin/events/close-group — Close all sessions in a group and send combined report
+router.post('/events/close-group', adminAuth, async (req, res) => {
+  try {
+    const db = getDb();
+    const { event_ids, email_to } = req.body;
+    if (!event_ids || !event_ids.length) return res.status(400).json({ error: 'Provide event_ids array' });
+
+    const placeholders = event_ids.map(() => '?').join(',');
+    const events = db.prepare(`SELECT id, title, status FROM events WHERE id IN (${placeholders})`).all(...event_ids);
+
+    // Mark all as completed
+    const update = db.prepare("UPDATE events SET status = 'completed', updated_at = datetime('now') WHERE id = ? AND status != 'completed'");
+    const closeAll = db.transaction(() => { for (const e of events) update.run(e.id); });
+    closeAll();
+
+    // Get combined report data
+    const statsRoutes = require('./stats');
+    const reportData = await new Promise((resolve, reject) => {
+      const fakeReq = { query: { ids: event_ids.join(',') }, admin: req.admin };
+      const fakeRes = {
+        json: (data) => resolve(data),
+        status: (code) => ({ json: (data) => reject(new Error(data.error || 'Report generation failed')) })
+      };
+      const layer = statsRoutes.stack.find(l => l.route && l.route.path === '/combined-report');
+      if (layer) {
+        layer.route.stack[layer.route.stack.length - 1].handle(fakeReq, fakeRes, (err) => { if (err) reject(err); });
+      } else {
+        reject(new Error('Combined report route not found'));
+      }
+    });
+
+    // Send email
+    const sendTo = email_to || 'info@ayrpavilion.com';
+    sendEventReportEmail({ to: sendTo, reportData })
+      .catch(err => console.error('Failed to send combined report email:', err.message));
+
+    const adminUser = db.prepare('SELECT email FROM admin_users WHERE id = ?').get(req.admin.userId);
+    if (adminUser && adminUser.email && adminUser.email !== sendTo) {
+      sendEventReportEmail({ to: adminUser.email, reportData })
+        .catch(err => console.error('Failed to send admin copy:', err.message));
+    }
+
+    res.json({
+      message: `${events.length} session(s) closed. Combined report sent.`,
+      group_name: reportData.group_name,
+      sessions_closed: events.map(e => e.title)
+    });
+  } catch (err) {
+    console.error('Close group error:', err);
+    res.status(500).json({ error: err.message || 'Failed to close event group' });
+  }
+});
+
 // POST /api/admin/events/retire-past — Auto-complete past events
 router.post('/events/retire-past', adminAuth, (req, res) => {
   try {

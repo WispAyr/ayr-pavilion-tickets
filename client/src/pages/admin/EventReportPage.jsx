@@ -46,20 +46,33 @@ export default function EventReportPage() {
   const forceNoFinancials = searchParams.get('financials') === '0';
   const [showFinancials, setShowFinancials] = useState(!forceNoFinancials && canSeeFinancials());
 
+  // Support combined reports via ?ids=1,2,3 search param
+  const combinedIds = searchParams.get('ids');
+  const isCombined = !!combinedIds;
+
   useEffect(() => {
     setLoading(true);
-    fetch(`${API_BASE}/admin/stats/event-report/${eventId}`, { headers: headers() })
+    const url = isCombined
+      ? `${API_BASE}/admin/stats/combined-report?ids=${combinedIds}`
+      : `${API_BASE}/admin/stats/event-report/${eventId}`;
+    fetch(url, { headers: headers() })
       .then(r => { if (!r.ok) throw new Error('Failed to load'); return r.json(); })
       .then(setData)
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
-  }, [eventId]);
+  }, [eventId, combinedIds]);
 
   async function handleSendEmail() {
     setSending(true);
     try {
-      const r = await fetch(`${API_BASE}/admin/events/${eventId}/close-event`, {
-        method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' }
+      const url = isCombined
+        ? `${API_BASE}/admin/events/close-group`
+        : `${API_BASE}/admin/events/${eventId}/close-event`;
+      const body = isCombined ? { event_ids: combinedIds.split(',').map(Number) } : {};
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { ...headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
       });
       if (!r.ok) throw new Error('Failed');
       setSent(true);
@@ -71,8 +84,18 @@ export default function EventReportPage() {
   if (loading) return <div className="min-h-screen flex items-center justify-center bg-white"><Loader2 className="w-10 h-10 text-gray-400 animate-spin" /></div>;
   if (error || !data) return <div className="min-h-screen flex items-center justify-center"><p className="text-red-500">{error || 'No data'}</p></div>;
 
-  // API returns snake_case keys
-  const event = data.event;
+  // API returns snake_case keys. Combined reports have different shape.
+  const dataCombined = data.is_combined;
+  const sessions = data.sessions || [];
+  const comps = data.comps || {};
+  const event = data.event || {
+    title: data.group_name || 'Combined Report',
+    date_time: data.date_range?.first,
+    doors_open: null,
+    venue: data.venue || 'Ayr Pavilion',
+    status: 'completed',
+    capacity: null
+  };
   const ticketTypes = data.ticket_types || data.ticketTypes || [];
   const financials = data.financials || {};
   const salesTimeline = data.sales_timeline || data.salesTimeline || [];
@@ -280,6 +303,50 @@ export default function EventReportPage() {
                 ))}
               </tbody>
             </table>
+          </>
+        )}
+
+        {/* Per-Session Breakdown (combined reports) */}
+        {dataCombined && sessions.length > 0 && (
+          <>
+            <h2 className="text-lg font-bold mb-3 border-b border-gray-200 pb-1">Per-Session Breakdown ({sessions.length} sessions)</h2>
+            <table className="w-full mb-6 text-xs">
+              <thead>
+                <tr className="border-b border-gray-300">
+                  <th className="text-left py-1.5 font-semibold">Session</th>
+                  <th className="text-right py-1.5 font-semibold">Date</th>
+                  {showFinancials && <th className="text-right py-1.5 font-semibold">Revenue</th>}
+                  <th className="text-right py-1.5 font-semibold">Sold</th>
+                  <th className="py-1.5 font-semibold w-24 text-right">Check-in</th>
+                  <th className="py-1.5 font-semibold w-24 text-right">No-show</th>
+                  <th className="text-right py-1.5 font-semibold">Orders</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sessions.map((s, i) => (
+                  <tr key={i} className="border-b border-gray-100">
+                    <td className="py-1.5 font-medium">{s.title.replace(event.title + ' \u2014 ', '')}</td>
+                    <td className="text-right py-1.5">{fmtDate(s.date_time)}</td>
+                    {showFinancials && <td className="text-right py-1.5 font-mono">{fmt(s.gross_revenue)}</td>}
+                    <td className="text-right py-1.5">{s.total_sold}</td>
+                    <td className="py-1.5"><BarCell pct={s.checkin_rate} color="auto" /></td>
+                    <td className="py-1.5"><BarCell pct={s.no_show_rate} color="bg-red-400" /></td>
+                    <td className="text-right py-1.5">{s.total_orders}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
+
+        {/* Comps */}
+        {comps && comps.total_comps > 0 && (
+          <>
+            <h2 className="text-lg font-bold mb-3 border-b border-gray-200 pb-1">Complimentary Tickets</h2>
+            <div className="grid grid-cols-2 gap-3 mb-6 text-xs max-w-sm">
+              <KpiCard label="Comp Orders" value={comps.total_comps} color="text-purple-600" />
+              <KpiCard label="Codes Used" value={comps.comp_codes_used} />
+            </div>
           </>
         )}
 

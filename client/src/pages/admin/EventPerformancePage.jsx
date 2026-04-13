@@ -12,6 +12,19 @@ import {
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
+function camelizeKeys(obj) {
+  if (Array.isArray(obj)) return obj.map(camelizeKeys);
+  if (obj && typeof obj === 'object') {
+    return Object.fromEntries(
+      Object.entries(obj).map(([k, v]) => [
+        k.replace(/_([a-z])/g, (_, c) => c.toUpperCase()),
+        camelizeKeys(v)
+      ])
+    );
+  }
+  return obj;
+}
+
 function getHeaders() {
   const token = localStorage.getItem('admin_token');
   return { Authorization: `Bearer ${token}` };
@@ -66,7 +79,7 @@ export default function EventPerformancePage() {
     try {
       const res = await fetch(`${API_BASE}/admin/performance/events`, { headers: getHeaders() });
       if (!res.ok) throw new Error('Failed to load performance data');
-      setData(await res.json());
+      setData(camelizeKeys(await res.json()));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -157,7 +170,7 @@ export default function EventPerformancePage() {
                 <SortHeader col="checkinRate" label="Check-in" />
                 <SortHeader col="noShowRate" label="No-Show" />
                 <SortHeader col="addOnUptake" label="Add-on Uptake" />
-                <SortHeader col="claimsRate" label="Claims Rate" />
+                <SortHeader col="protectionClaimRate" label="Claims" />
               </tr>
             </thead>
             <tbody className="divide-y divide-pavilion-600/30">
@@ -176,7 +189,7 @@ export default function EventPerformancePage() {
                   <td className="px-4 py-3"><PctBar value={ev.checkinRate} /></td>
                   <td className="px-4 py-3"><PctBar value={ev.noShowRate} /></td>
                   <td className="px-4 py-3"><PctBar value={ev.addOnUptake} /></td>
-                  <td className="px-4 py-3"><PctBar value={ev.claimsRate} /></td>
+                  <td className="px-4 py-3"><PctBar value={ev.protectionClaimRate} /></td>
                 </tr>
               ))}
               {sorted.length === 0 && (

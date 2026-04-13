@@ -986,16 +986,41 @@ async function sendCompInviteEmail({ to, recipientName, eventTitle, dateTime, ve
 async function sendEventReportEmail({ to, reportData }) {
   const transporter = createTransporter();
   const r = reportData;
-  const event = r.event;
+  const isCombined = !!r.is_combined;
+
+  // Handle both single event and combined reports
+  const event = r.event || {
+    title: r.group_name || 'Combined Report',
+    date_time: r.date_range?.first || new Date().toISOString(),
+    venue: r.venue || 'Ayr Pavilion',
+    doors_open: null
+  };
 
   const eventDate = new Date(event.date_time);
-  const formattedDate = eventDate.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-  const formattedTime = eventDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const formattedDate = isCombined
+    ? `${new Date(r.date_range.first).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })} — ${new Date(r.date_range.last).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}`
+    : eventDate.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const formattedTime = isCombined ? `${r.total_sessions} sessions` : eventDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
-  const totalSold = r.ticket_types.reduce((s, tt) => s + tt.sold, 0);
-  const totalCapacity = r.ticket_types.reduce((s, tt) => s + tt.quantity, 0);
-  const totalCheckedIn = r.ticket_types.reduce((s, tt) => s + tt.checked_in, 0);
-  const totalNoShows = r.no_shows.reduce((s, ns) => s + ns.no_show_count, 0);
+  // Ensure safe defaults for all sections
+  r.ticket_types = r.ticket_types || [];
+  r.no_shows = r.no_shows || [];
+  r.financials = r.financials || {};
+  r.sales_timeline = r.sales_timeline || [];
+  r.booking_velocity = r.booking_velocity || {};
+  r.arrival_intelligence = r.arrival_intelligence || { arrival_curve: [], early_pct: 0, on_time_pct: 0, late_pct: 0 };
+  r.protection_claims = r.protection_claims || {};
+  r.customer_intelligence = r.customer_intelligence || {};
+  r.scanner_performance = r.scanner_performance || [];
+  r.email_engagement = r.email_engagement || {};
+  r.addons = r.addons || [];
+  r.manifest = r.manifest || [];
+  r.comps = r.comps || {};
+
+  const totalSold = r.ticket_types.reduce((s, tt) => s + (tt.sold || 0), 0);
+  const totalCapacity = r.ticket_types.reduce((s, tt) => s + (tt.quantity || 0), 0);
+  const totalCheckedIn = r.ticket_types.reduce((s, tt) => s + (tt.checked_in || 0), 0);
+  const totalNoShows = r.no_shows.reduce((s, ns) => s + (ns.no_show_count || 0), 0);
   const checkinRate = totalSold > 0 ? Math.round((totalCheckedIn / totalSold) * 1000) / 10 : 0;
   const noShowRate = totalSold > 0 ? Math.round((totalNoShows / totalSold) * 1000) / 10 : 0;
 
@@ -1053,7 +1078,7 @@ async function sendEventReportEmail({ to, reportData }) {
 
   // Arrival curve
   let arrivalHtml = '';
-  if (r.arrival_intelligence.arrival_curve.length > 0) {
+  if (r.arrival_intelligence && r.arrival_intelligence.arrival_curve && r.arrival_intelligence.arrival_curve.length > 0) {
     const maxArrival = Math.max(...r.arrival_intelligence.arrival_curve.map(b => b.count));
     let arrivalCells = '';
     for (const bucket of r.arrival_intelligence.arrival_curve) {
@@ -1176,7 +1201,69 @@ async function sendEventReportEmail({ to, reportData }) {
       </td></tr>`;
   }
 
-  const subject = `Event Report: ${event.title} — ${formattedDate}`;
+  // Per-session breakdown for combined reports
+  let sessionsBlock = '';
+  if (isCombined && r.sessions && r.sessions.length > 0) {
+    let sessionRows = '';
+    for (const s of r.sessions) {
+      const sDate = new Date(s.date_time).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+      const ciColor = s.checkin_rate > 70 ? '#4ade80' : s.checkin_rate > 40 ? '#fbbf24' : '#ff6b6b';
+      const nsColor = s.no_show_rate > 20 ? '#ff6b6b' : '#999';
+      sessionRows += `
+        <tr>
+          <td style="padding:8px 12px;color:#fff;font-size:12px;border-bottom:1px solid #2a2a4a;">${s.title.replace(r.group_name + ' \u2014 ', '')}</td>
+          <td style="padding:8px 6px;color:#999;font-size:12px;text-align:center;border-bottom:1px solid #2a2a4a;">${sDate}</td>
+          <td style="padding:8px 6px;color:#D4A843;font-size:12px;text-align:right;border-bottom:1px solid #2a2a4a;">${fmtMoney(s.gross_revenue)}</td>
+          <td style="padding:8px 6px;color:#fff;font-size:12px;text-align:center;border-bottom:1px solid #2a2a4a;">${s.total_sold}</td>
+          <td style="padding:8px 6px;color:${ciColor};font-size:12px;text-align:center;border-bottom:1px solid #2a2a4a;">${s.checkin_rate}%</td>
+          <td style="padding:8px 6px;color:${nsColor};font-size:12px;text-align:center;border-bottom:1px solid #2a2a4a;">${s.no_show_rate}%</td>
+          <td style="padding:8px 6px;color:#fff;font-size:12px;text-align:center;border-bottom:1px solid #2a2a4a;">${s.total_orders}</td>
+        </tr>`;
+    }
+    sessionsBlock = `
+      <tr><td style="padding:25px 30px 15px;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#12122a;border-radius:12px;overflow:hidden;">
+          <tr><td colspan="7" style="padding:15px 15px 8px;border-bottom:2px solid #D4A843;">
+            <span style="color:#D4A843;font-size:12px;text-transform:uppercase;letter-spacing:2px;font-weight:bold;">Per-Session Breakdown</span>
+          </td></tr>
+          <tr style="background-color:#0a0a1a;">
+            <th style="padding:10px 12px;color:#888;font-size:11px;text-align:left;text-transform:uppercase;">Session</th>
+            <th style="padding:10px 6px;color:#888;font-size:11px;text-align:center;text-transform:uppercase;">Date</th>
+            <th style="padding:10px 6px;color:#888;font-size:11px;text-align:right;text-transform:uppercase;">Revenue</th>
+            <th style="padding:10px 6px;color:#888;font-size:11px;text-align:center;text-transform:uppercase;">Sold</th>
+            <th style="padding:10px 6px;color:#888;font-size:11px;text-align:center;text-transform:uppercase;">Check-in</th>
+            <th style="padding:10px 6px;color:#888;font-size:11px;text-align:center;text-transform:uppercase;">No-show</th>
+            <th style="padding:10px 6px;color:#888;font-size:11px;text-align:center;text-transform:uppercase;">Orders</th>
+          </tr>
+          ${sessionRows}
+        </table>
+      </td></tr>`;
+  }
+
+  // Comps block
+  let compsBlock = '';
+  if (r.comps && r.comps.total_comps > 0) {
+    compsBlock = `
+      <tr><td style="padding:0 30px 15px;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#12122a;border-radius:12px;overflow:hidden;">
+          <tr><td colspan="2" style="padding:15px 15px 8px;border-bottom:2px solid #9333ea;">
+            <span style="color:#9333ea;font-size:12px;text-transform:uppercase;letter-spacing:2px;font-weight:bold;">Complimentary Tickets</span>
+          </td></tr>
+          <tr>
+            <td style="padding:12px 15px;color:#ccc;font-size:13px;">Comp orders issued</td>
+            <td style="padding:12px 15px;color:#fff;font-size:13px;text-align:right;font-weight:bold;">${r.comps.total_comps}</td>
+          </tr>
+          <tr>
+            <td style="padding:12px 15px;color:#ccc;font-size:13px;border-top:1px solid #2a2a4a;">Comp codes used</td>
+            <td style="padding:12px 15px;color:#fff;font-size:13px;text-align:right;border-top:1px solid #2a2a4a;">${r.comps.comp_codes_used}</td>
+          </tr>
+        </table>
+      </td></tr>`;
+  }
+
+  const subject = isCombined
+    ? `Combined Event Report: ${r.group_name} — ${r.total_sessions} Sessions`
+    : `Event Report: ${event.title} — ${formattedDate}`;
   const timestamp = new Date().toLocaleString('en-GB', { dateStyle: 'full', timeStyle: 'short' });
 
   const html = `<!DOCTYPE html>
@@ -1320,6 +1407,10 @@ async function sendEventReportEmail({ to, reportData }) {
         </td></tr>
 
         ${scannerSection}
+
+        ${sessionsBlock}
+
+        ${compsBlock}
 
         <!-- Email Engagement -->
         <tr><td style="padding:20px 30px 0;">

@@ -248,6 +248,38 @@ export default function EventsList() {
         </div>
       </div>
 
+      {/* Combined Report buttons for multi-session event groups (past view only) */}
+      {timeView === 'past' && (() => {
+        const groups = {};
+        for (const e of filtered) {
+          const dash = e.title.indexOf(' \u2014 ');
+          const prefix = dash > -1 ? e.title.substring(0, dash) : null;
+          if (prefix) {
+            if (!groups[prefix]) groups[prefix] = [];
+            groups[prefix].push(e);
+          }
+        }
+        const multiGroups = Object.entries(groups).filter(([, evts]) => evts.length > 1);
+        if (multiGroups.length === 0) return null;
+        return (
+          <div className="space-y-2">
+            <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Combined Reports</h3>
+            <div className="flex flex-wrap gap-2">
+              {multiGroups.map(([name, evts]) => {
+                const ids = evts.map(e => e.id).join(',');
+                return (
+                  <Link key={name} to={`/admin/event-report/combined?ids=${ids}`} target="_blank"
+                    className="flex items-center gap-2 px-4 py-2.5 bg-purple-500/10 border border-purple-500/20 rounded-lg text-sm text-purple-400 hover:bg-purple-500/20 transition-all">
+                    <Printer className="w-3.5 h-3.5" />
+                    {name} ({evts.length} sessions)
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Events list */}
       {filtered.length === 0 ? (
         <div className="text-center py-16">
