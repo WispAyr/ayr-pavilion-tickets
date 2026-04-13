@@ -778,6 +778,44 @@ router.get('/combined-report', adminAuth, (req, res) => {
     const totalCheckedIn = allTicketTypes.reduce((s, t) => s + t.checked_in, 0);
     const totalNoShows = allTicketTypes.reduce((s, t) => s + t.valid, 0);
 
+    // Aggregate arrival intelligence across all sessions
+    const allScanTimes = [];
+    for (const evt of events) {
+      const doorsTime = new Date(evt.doors_open || evt.date_time).getTime();
+      const scans = db.prepare(`
+        SELECT s.scanned_at FROM scans s
+        JOIN tickets t ON s.ticket_id = t.id
+        WHERE t.event_id = ? AND s.result = 'valid'
+      `).all(evt.id);
+      for (const sc of scans) {
+        allScanTimes.push({ offset_mins: Math.round((new Date(sc.scanned_at).getTime() - doorsTime) / 60000) });
+      }
+    }
+    let arrivalIntel = { arrival_curve: [], peak_arrival_time: null, early_pct: 0, on_time_pct: 0, late_pct: 0 };
+    if (allScanTimes.length > 0) {
+      let early = 0, onTime = 0, late = 0;
+      const buckets = {};
+      for (const sc of allScanTimes) {
+        const bucket = Math.floor(sc.offset_mins / 15) * 15;
+        buckets[bucket] = (buckets[bucket] || 0) + 1;
+        if (sc.offset_mins < 0) early++;
+        else if (sc.offset_mins <= 30) onTime++;
+        else late++;
+      }
+      const total = allScanTimes.length;
+      const curve = Object.entries(buckets).sort((a,b) => Number(a[0]) - Number(b[0])).map(([k,v]) => ({
+        offset_mins: Number(k), count: v, label: Number(k) < 0 ? k + 'm' : '+' + k + 'm'
+      }));
+      const peak = curve.reduce((max, b) => b.count > (max?.count || 0) ? b : max, null);
+      arrivalIntel = {
+        arrival_curve: curve,
+        peak_arrival_time: peak ? peak.label : null,
+        early_pct: Math.round(early / total * 1000) / 10,
+        on_time_pct: Math.round(onTime / total * 1000) / 10,
+        late_pct: Math.round(late / total * 1000) / 10
+      };
+    }
+
     res.json({
       generated_at: new Date().toISOString(),
       is_combined: true,
@@ -799,6 +837,7 @@ router.get('/combined-report', adminAuth, (req, res) => {
       financials: fin,
       sales_timeline: salesTimeline,
       booking_velocity: velocityData,
+      arrival_intelligence: arrivalIntel,
       no_shows: noShows,
       sessions: sessionReports,
       protection_claims: claimsData,
