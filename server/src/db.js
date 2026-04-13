@@ -293,6 +293,10 @@ function initialize() {
     db.exec('ALTER TABLE orders ADD COLUMN marketing_opt_in INTEGER DEFAULT 0');
   }
 
+  if (!orderCols.includes('order_items')) {
+    db.exec('ALTER TABLE orders ADD COLUMN order_items TEXT');
+  }
+
 
   // Group passes — one QR per purchaser per event for batch check-in
   db.exec(`

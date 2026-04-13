@@ -820,14 +820,50 @@ router.post('/orders/:id/add-addon', adminAuth, (req, res) => {
   }
 });
 
+// GET /api/admin/events/:eventId/scan-usage — Check scanner usage before closing
+router.get('/events/:eventId/scan-usage', adminAuth, (req, res) => {
+  try {
+    const db = getDb();
+    const { eventId } = req.params;
+
+    const event = db.prepare('SELECT id, title FROM events WHERE id = ?').get(eventId);
+    if (!event) return res.status(404).json({ error: 'Event not found' });
+
+    const total = db.prepare("SELECT COUNT(*) as count FROM tickets WHERE event_id = ? AND status IN ('valid', 'used')").get(eventId);
+    const checkedIn = db.prepare("SELECT COUNT(*) as count FROM tickets WHERE event_id = ? AND status = 'used'").get(eventId);
+    const uncheckedIn = db.prepare("SELECT COUNT(*) as count FROM tickets WHERE event_id = ? AND status = 'valid'").get(eventId);
+
+    const scanPct = total.count > 0 ? Math.round((checkedIn.count / total.count) * 1000) / 10 : 0;
+
+    res.json({
+      event_id: parseInt(eventId),
+      event_title: event.title,
+      total_tickets: total.count,
+      checked_in: checkedIn.count,
+      unchecked_in: uncheckedIn.count,
+      scan_percentage: scanPct,
+      scanner_barely_used: total.count > 0 && scanPct < 10
+    });
+  } catch (err) {
+    console.error('Scan usage check error:', err);
+    res.status(500).json({ error: 'Failed to check scan usage' });
+  }
+});
+
 // POST /api/admin/events/:eventId/close-event — Close event and send report
 router.post('/events/:eventId/close-event', adminAuth, async (req, res) => {
   try {
     const db = getDb();
     const { eventId } = req.params;
+    const { markAttended } = req.body || {};
 
     const event = db.prepare('SELECT * FROM events WHERE id = ?').get(eventId);
     if (!event) return res.status(404).json({ error: 'Event not found' });
+
+    // If admin chose to mark all as attended, bulk update valid tickets
+    if (markAttended) {
+      db.prepare("UPDATE tickets SET status = 'used', checked_in_at = datetime('now') WHERE event_id = ? AND status = 'valid'").run(eventId);
+    }
 
     // Set event status to completed
     db.prepare("UPDATE events SET status = 'completed', updated_at = datetime('now') WHERE id = ?").run(eventId);
@@ -868,15 +904,21 @@ router.post('/events/:eventId/close-event', adminAuth, async (req, res) => {
 router.post('/events/close-group', adminAuth, async (req, res) => {
   try {
     const db = getDb();
-    const { event_ids, email_to } = req.body;
+    const { event_ids, email_to, markAttended } = req.body;
     if (!event_ids || !event_ids.length) return res.status(400).json({ error: 'Provide event_ids array' });
 
     const placeholders = event_ids.map(() => '?').join(',');
     const events = db.prepare(`SELECT id, title, status FROM events WHERE id IN (${placeholders})`).all(...event_ids);
 
-    // Mark all as completed
+    // Mark all as completed (with optional bulk mark-attended)
     const update = db.prepare("UPDATE events SET status = 'completed', updated_at = datetime('now') WHERE id = ? AND status != 'completed'");
-    const closeAll = db.transaction(() => { for (const e of events) update.run(e.id); });
+    const markUsed = db.prepare("UPDATE tickets SET status = 'used', checked_in_at = datetime('now') WHERE event_id = ? AND status = 'valid'");
+    const closeAll = db.transaction(() => {
+      for (const e of events) {
+        if (markAttended) markUsed.run(e.id);
+        update.run(e.id);
+      }
+    });
     closeAll();
 
     // Get combined report data
@@ -921,6 +963,7 @@ router.post('/events/close-group', adminAuth, async (req, res) => {
 router.post('/events/retire-past', adminAuth, (req, res) => {
   try {
     const db = getDb();
+    const { markAllAttended } = req.body || {};
 
     const pastEvents = db.prepare(`
       SELECT id, title, date_time FROM events
@@ -933,8 +976,10 @@ router.post('/events/retire-past', adminAuth, (req, res) => {
     }
 
     const update = db.prepare("UPDATE events SET status = 'completed', updated_at = datetime('now') WHERE id = ?");
+    const markUsed = db.prepare("UPDATE tickets SET status = 'used', checked_in_at = datetime('now') WHERE event_id = ? AND status = 'valid'");
     const retireAll = db.transaction(() => {
       for (const evt of pastEvents) {
+        if (markAllAttended) markUsed.run(evt.id);
         update.run(evt.id);
       }
     });

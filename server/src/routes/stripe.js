@@ -67,59 +67,68 @@ router.post('/checkout', async (req, res) => {
       }
     }
 
-    // Validate ticket types and availability
+    // Validate ticket types, check availability, and reserve inventory atomically
     let totalPence = 0;
     const lineItems = [];
     const orderItems = [];
 
-    for (const item of items) {
-      const ticketType = db.prepare('SELECT * FROM ticket_types WHERE id = ? AND event_id = ?').get(item.ticketTypeId, eventId);
+    const reserveInventory = db.transaction(() => {
+      for (const item of items) {
+        const ticketType = db.prepare('SELECT * FROM ticket_types WHERE id = ? AND event_id = ?').get(item.ticketTypeId, eventId);
 
-      if (!ticketType) {
-        return res.status(404).json({ error: `Ticket type ${item.ticketTypeId} not found` });
-      }
+        if (!ticketType) {
+          throw new Error(`Ticket type ${item.ticketTypeId} not found`);
+        }
 
-      const available = ticketType.quantity - ticketType.sold;
-      if (item.quantity > available) {
-        return res.status(400).json({
-          error: `Only ${available} ${ticketType.name} tickets remaining`
+        const available = ticketType.quantity - ticketType.sold;
+        if (item.quantity > available) {
+          throw new Error(`Only ${available} ${ticketType.name} tickets remaining`);
+        }
+
+        // Check sale window
+        const now = new Date().toISOString();
+        if (ticketType.sale_start && now < ticketType.sale_start) {
+          throw new Error(`${ticketType.name} tickets are not yet on sale`);
+        }
+        if (ticketType.sale_end && now > ticketType.sale_end) {
+          throw new Error(`${ticketType.name} ticket sales have ended`);
+        }
+
+        // Reserve inventory — increment sold counter now
+        db.prepare('UPDATE ticket_types SET sold = sold + ? WHERE id = ?').run(item.quantity, ticketType.id);
+
+        const itemTotal = ticketType.price * item.quantity;
+        totalPence += itemTotal;
+
+        lineItems.push({
+          price_data: {
+            currency: 'gbp',
+            product_data: {
+              name: `${ticketType.name} - ${event.title}`,
+              description: ticketType.description || `${ticketType.name} ticket for ${event.title}`,
+              metadata: {
+                event_id: String(event.id),
+                ticket_type_id: String(ticketType.id)
+              }
+            },
+            unit_amount: ticketType.price
+          },
+          quantity: item.quantity
+        });
+
+        orderItems.push({
+          ticketTypeId: ticketType.id,
+          ticketTypeName: ticketType.name,
+          quantity: item.quantity,
+          price: ticketType.price
         });
       }
+    });
 
-      // Check sale window
-      const now = new Date().toISOString();
-      if (ticketType.sale_start && now < ticketType.sale_start) {
-        return res.status(400).json({ error: `${ticketType.name} tickets are not yet on sale` });
-      }
-      if (ticketType.sale_end && now > ticketType.sale_end) {
-        return res.status(400).json({ error: `${ticketType.name} ticket sales have ended` });
-      }
-
-      const itemTotal = ticketType.price * item.quantity;
-      totalPence += itemTotal;
-
-      lineItems.push({
-        price_data: {
-          currency: 'gbp',
-          product_data: {
-            name: `${ticketType.name} - ${event.title}`,
-            description: ticketType.description || `${ticketType.name} ticket for ${event.title}`,
-            metadata: {
-              event_id: String(event.id),
-              ticket_type_id: String(ticketType.id)
-            }
-          },
-          unit_amount: ticketType.price
-        },
-        quantity: item.quantity
-      });
-
-      orderItems.push({
-        ticketTypeId: ticketType.id,
-        ticketTypeName: ticketType.name,
-        quantity: item.quantity,
-        price: ticketType.price
-      });
+    try {
+      reserveInventory();
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
     }
 
     // Validate and calculate addon costs
@@ -269,9 +278,16 @@ router.post('/checkout', async (req, res) => {
     });
 
     db.prepare(`
-      INSERT INTO orders (order_ref, event_id, customer_name, customer_email, customer_phone, total, booking_fee, status, stripe_session_id, protection_opted, protection_fee, marketing_opt_in)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
-    `).run(orderRef, eventId, customerName, customerEmail, customerPhone || null, grandTotal, bookingFee, session.id, protectionOpted, protectionTotal, marketingOptIn ? 1 : 0);
+      INSERT INTO orders (order_ref, event_id, customer_name, customer_email, customer_phone, total, booking_fee, status, stripe_session_id, protection_opted, protection_fee, marketing_opt_in, order_items)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+    `).run(orderRef, eventId, customerName, customerEmail, customerPhone || null, grandTotal, bookingFee, session.id, protectionOpted, protectionTotal, marketingOptIn ? 1 : 0, JSON.stringify(orderItems));
+
+    // Check if event is now sold out from this reservation
+    const ticketTypesCheck = db.prepare('SELECT * FROM ticket_types WHERE event_id = ?').all(eventId);
+    const allSoldOut = ticketTypesCheck.every(tt => tt.sold >= tt.quantity);
+    if (allSoldOut) {
+      db.prepare("UPDATE events SET status = 'sold-out', updated_at = datetime('now') WHERE id = ?").run(eventId);
+    }
 
     res.json({ url: session.url, orderRef });
   } catch (err) {
@@ -322,20 +338,15 @@ router.post('/webhook', async (req, res) => {
           WHERE id = ?
         `).run(session.payment_intent, protectionOpted, protectionFee, order.id);
 
-        // Generate tickets
+        // Generate tickets (sold counter already reserved at checkout time)
         const tickets = [];
         const insertTicket = db.prepare(`
           INSERT INTO tickets (code, order_id, event_id, ticket_type_id, holder_name)
           VALUES (?, ?, ?, ?, ?)
         `);
-        const updateSold = db.prepare(`
-          UPDATE ticket_types SET sold = sold + ? WHERE id = ?
-        `);
 
         const generateTickets = db.transaction(() => {
           for (const item of orderItems) {
-            updateSold.run(item.quantity, item.ticketTypeId);
-
             for (let i = 0; i < item.quantity; i++) {
               const code = uuidv4();
               insertTicket.run(code, order.id, eventId, item.ticketTypeId, order.customer_name);
@@ -407,13 +418,6 @@ router.post('/webhook', async (req, res) => {
           }
         }
 
-        // Check if event is now sold out
-        const ticketTypes = db.prepare('SELECT * FROM ticket_types WHERE event_id = ?').all(eventId);
-        const allSoldOut = ticketTypes.every(tt => tt.sold >= tt.quantity);
-        if (allSoldOut) {
-          db.prepare("UPDATE events SET status = 'sold-out', updated_at = datetime('now') WHERE id = ?").run(eventId);
-        }
-
         // Send confirmation email (async, don't block webhook response)
         const eventData = db.prepare('SELECT * FROM events WHERE id = ?').get(eventId);
         if (eventData) {
@@ -436,6 +440,34 @@ router.post('/webhook', async (req, res) => {
         }
 
         console.log(`Order ${orderRef} completed: ${tickets.length} tickets generated${protectionOpted ? ' (protected)' : ''}`);
+        break;
+      }
+
+      case 'checkout.session.expired': {
+        const session = event.data.object;
+        const orderRef = session.metadata.order_ref;
+
+        const order = db.prepare("SELECT * FROM orders WHERE order_ref = ? AND status = 'pending'").get(orderRef);
+        if (!order) break;
+
+        // Release reserved inventory
+        const expiredItems = JSON.parse(order.order_items || '[]');
+        const releaseInventory = db.transaction(() => {
+          for (const item of expiredItems) {
+            db.prepare('UPDATE ticket_types SET sold = MAX(0, sold - ?) WHERE id = ?').run(item.quantity, item.ticketTypeId);
+          }
+          db.prepare("UPDATE orders SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?").run(order.id);
+        });
+        releaseInventory();
+
+        // Restore event availability if it was marked sold-out
+        const ttCheck = db.prepare('SELECT * FROM ticket_types WHERE event_id = ?').all(order.event_id);
+        const hasAvailability = ttCheck.some(tt => tt.sold < tt.quantity);
+        if (hasAvailability) {
+          db.prepare("UPDATE events SET status = 'on-sale', updated_at = datetime('now') WHERE id = ? AND status = 'sold-out'").run(order.event_id);
+        }
+
+        console.log(`Order ${orderRef} expired: inventory released`);
         break;
       }
 

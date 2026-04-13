@@ -11,9 +11,13 @@ const fs = require('fs');
 const rateLimit = require('express-rate-limit');
 
 const { initialize } = require('./db');
+const { startReservationCleanup } = require('./services/reservationCleanup');
 
 // Initialize database
 initialize();
+
+// Start periodic cleanup of expired checkout reservations
+startReservationCleanup(60000);
 
 const app = express();
 

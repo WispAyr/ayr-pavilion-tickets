@@ -19,6 +19,7 @@ async function createCheckoutSession({ lineItems, customerEmail, customerName, o
     line_items: lineItems,
     success_url: successUrl,
     cancel_url: cancelUrl,
+    expires_at: Math.floor(Date.now() / 1000) + (30 * 60),
     metadata: {
       order_ref: orderRef,
       customer_name: customerName,

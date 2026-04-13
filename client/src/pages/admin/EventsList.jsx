@@ -67,6 +67,7 @@ export default function EventsList() {
   const [retiring, setRetiring] = useState(false);
   const [closing, setClosing] = useState(null);
   const [toast, setToast] = useState(null);
+  const [closeModal, setCloseModal] = useState(null);
 
   useEffect(() => {
     loadEvents();
@@ -98,11 +99,33 @@ export default function EventsList() {
 
   async function handleRetirePast() {
     if (!confirm('Retire all past events still showing as on-sale or sold-out?')) return;
+
+    // Check scan usage across events to see if any had low scanner usage
+    let anyBarelyUsed = false;
+    for (const e of pastEventsStillActive) {
+      try {
+        const r = await fetch(`${API_BASE}/admin/events/${e.id}/scan-usage`, { headers: getHeaders() });
+        if (r.ok) {
+          const stats = await r.json();
+          if (stats.scanner_barely_used && stats.unchecked_in > 0) { anyBarelyUsed = true; break; }
+        }
+      } catch {}
+    }
+
+    let markAllAttended = false;
+    if (anyBarelyUsed) {
+      markAllAttended = confirm(
+        'Some events had very low scanner usage (<10%). Mark all unchecked tickets as attended?\n\n' +
+        'OK = Mark as attended (scanner wasn\'t used)\nCancel = Keep as no-shows'
+      );
+    }
+
     setRetiring(true);
     try {
       const res = await fetch(`${API_BASE}/admin/events/retire-past`, {
         method: 'POST',
         headers: getHeaders(),
+        body: JSON.stringify({ markAllAttended }),
       });
       if (!res.ok) throw new Error('Failed to retire events');
       loadEvents();
@@ -114,11 +137,37 @@ export default function EventsList() {
   }
 
   async function handleCloseEvent(id) {
+    try {
+      // Check scan usage first
+      const r = await fetch(`${API_BASE}/admin/events/${id}/scan-usage`, { headers: getHeaders() });
+      if (!r.ok) throw new Error('Failed to check scan usage');
+      const stats = await r.json();
+
+      if (stats.scanner_barely_used && stats.unchecked_in > 0) {
+        setCloseModal({
+          eventId: id,
+          title: stats.event_title,
+          checkedIn: stats.checked_in,
+          uncheckedIn: stats.unchecked_in,
+          totalTickets: stats.total_tickets,
+          scanPct: stats.scan_percentage,
+        });
+      } else {
+        await doCloseEvent(id, false);
+      }
+    } catch (err) {
+      alert('Close failed: ' + err.message);
+    }
+  }
+
+  async function doCloseEvent(id, markAttended) {
     setClosing(id);
+    setCloseModal(null);
     try {
       const res = await fetch(`${API_BASE}/admin/events/${id}/close-event`, {
         method: 'POST',
         headers: getHeaders(),
+        body: JSON.stringify({ markAttended }),
       });
       if (!res.ok) throw new Error('Failed to close event');
       setToast('Report sent!');
@@ -357,6 +406,41 @@ export default function EventsList() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Scanner usage modal — shown when closing an event with low scan usage */}
+      {closeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-pavilion-800 border border-pavilion-600 rounded-xl p-6 max-w-md w-full mx-4 space-y-4">
+            <h3 className="text-lg font-bold text-white">Scanner Barely Used</h3>
+            <p className="text-gray-300 text-sm">
+              For &ldquo;{closeModal.title}&rdquo;, only {closeModal.scanPct}% of tickets were scanned
+              ({closeModal.checkedIn} of {closeModal.totalTickets}).
+              There are <strong>{closeModal.uncheckedIn}</strong> unchecked tickets that would show as no-shows.
+            </p>
+            <p className="text-gray-400 text-sm">Was the QR scanner used at this event?</p>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => doCloseEvent(closeModal.eventId, true)}
+                className="w-full px-4 py-2.5 bg-green-500/20 border border-green-500/30 rounded-lg text-green-400 hover:bg-green-500/30 text-sm font-medium"
+              >
+                Mark all as attended (scanner wasn't used)
+              </button>
+              <button
+                onClick={() => doCloseEvent(closeModal.eventId, false)}
+                className="w-full px-4 py-2.5 bg-red-500/20 border border-red-500/30 rounded-lg text-red-400 hover:bg-red-500/30 text-sm font-medium"
+              >
+                Keep as no-shows (scanner was used)
+              </button>
+              <button
+                onClick={() => setCloseModal(null)}
+                className="w-full px-4 py-2.5 text-gray-400 hover:text-white text-sm"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
