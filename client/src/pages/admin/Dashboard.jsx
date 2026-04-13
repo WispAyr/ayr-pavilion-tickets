@@ -10,7 +10,7 @@ import {
   Plus,
   ArrowRight,
 } from 'lucide-react';
-import { fetchDashboard } from '../../lib/api';
+import { fetchDashboard, canSeeFinancials } from '../../lib/api';
 
 function formatPrice(pence) {
   return `\u00a3${(pence / 100).toFixed(2)}`;
@@ -71,13 +71,13 @@ export default function Dashboard() {
       color: 'text-green-400',
       bgColor: 'bg-green-500/10',
     },
-    {
+    ...(canSeeFinancials() ? [{
       label: 'Revenue',
       value: formatPrice(s.totalRevenue ?? 0),
       icon: PoundSterling,
       color: 'text-gold-400',
       bgColor: 'bg-gold-500/10',
-    },
+    }] : []),
     {
       label: 'Active Events',
       value: s.activeEvents ?? 0,
@@ -151,7 +151,7 @@ export default function Dashboard() {
                 </div>
                 <div className="text-right">
                   <p className="text-sm font-semibold text-gold-400">
-                    {formatPrice(order.totalAmount || order.total || 0)}
+                    {canSeeFinancials() ? formatPrice(order.totalAmount || order.total || 0) : '—'}
                   </p>
                   <p className="text-xs text-gray-500">{formatDate(order.createdAt)}</p>
                 </div>

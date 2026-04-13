@@ -352,8 +352,8 @@ export default function StatsPage() {
           {eventStats.length > 0 ? (
             <div className="space-y-3 max-h-96 overflow-y-auto">
               {eventStats.map(ev => {
-                const soldPct = ev.capacity ? Math.round((ev.tickets_sold / ev.capacity) * 100) : null;
-                const checkinPct = ev.tickets_sold ? Math.round((ev.checked_in / ev.tickets_sold) * 100) : 0;
+                const soldPct = ev.capacity ? Math.round(((ev.tickets_sold || 0) / ev.capacity) * 100) : null;
+                const checkinPct = ev.tickets_sold ? Math.round(((ev.checked_in || 0) / ev.tickets_sold) * 100) : 0;
                 return (
                   <div key={ev.id} className="bg-pavilion-700/50 rounded-lg p-3">
                     <div className="flex items-start justify-between mb-2">
@@ -389,17 +389,26 @@ export default function StatsPage() {
         {/* Ticket Types Breakdown */}
         <Section title="Ticket Types" icon={Ticket}>
           {ticketTypes.length > 0 ? (
-            <div className="space-y-2 max-h-96 overflow-y-auto">
-              {ticketTypes.map((tt, i) => (
-                <div key={i} className="flex items-center justify-between py-2 border-b border-pavilion-600/20 last:border-0">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm text-white truncate">{tt.name}</p>
-                    <p className="text-xs text-gray-500 truncate">{tt.event_title}</p>
-                  </div>
-                  <div className="text-right ml-3">
-                    <p className="text-sm font-medium text-white">{tt.sold} / {tt.available}</p>
-                    <p className="text-xs text-gray-500">{fmt(tt.price)} · {tt.used} used</p>
-                  </div>
+            <div className="space-y-1 max-h-96 overflow-y-auto">
+              {Object.entries(ticketTypes.reduce((groups, tt) => {
+                const key = tt.eventTitle || "Unknown";
+                if (!groups[key]) groups[key] = [];
+                groups[key].push(tt);
+                return groups;
+              }, {})).map(([eventTitle, types]) => (
+                <div key={eventTitle} className="mb-3">
+                  <p className="text-xs font-semibold text-gold-400 uppercase tracking-wider mb-1.5 px-1">{eventTitle}</p>
+                  {types.map((tt, i) => (
+                    <div key={i} className="flex items-center justify-between py-1.5 px-1 border-b border-pavilion-600/20 last:border-0">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm text-white truncate">{tt.name}</p>
+                      </div>
+                      <div className="text-right ml-3">
+                        <p className="text-sm font-medium text-white">{tt.sold} / {tt.available}</p>
+                        <p className="text-xs text-gray-500">{fmt(tt.price)} · {tt.used} used</p>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               ))}
             </div>

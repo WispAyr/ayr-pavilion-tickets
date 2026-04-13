@@ -19,7 +19,7 @@ function generateOrderRef() {
 router.post('/checkout', async (req, res) => {
   try {
     const db = getDb();
-    const { eventId, items, customerName, customerEmail, customerPhone, addonSelections, waiverAcceptances } = req.body;
+    const { eventId, items, customerName, customerEmail, customerPhone, addonSelections, waiverAcceptances, protectTickets, marketingOptIn } = req.body;
 
     if (!eventId || !items || !items.length || !customerName || !customerEmail) {
       return res.status(400).json({ error: 'Missing required fields: eventId, items, customerName, customerEmail' });
@@ -56,18 +56,13 @@ router.post('/checkout', async (req, res) => {
         });
       }
 
-      // Check ratio (e.g. "1:1" = 1 adult per 1 child, "1:any" = 1 adult for any number of kids)
-      const ratioStr = event.supervision_ratio || '1:any';
-      if (ratioStr !== '1:any') {
-        const ratio = ratioStr.split(':').map(Number);
-        if (ratio.length === 2 && !isNaN(ratio[0]) && !isNaN(ratio[1]) && ratio[1] > 0) {
-          const requiredAdults = Math.ceil(childCount * (ratio[0] / ratio[1]));
-          if (adultCount < requiredAdults) {
-            return res.status(400).json({
-              error: `At least ${requiredAdults} adult ticket(s) required for ${childCount} child ticket(s) (${ratioStr} adult-to-child ratio).`
-            });
-          }
-        }
+      // Parse ratio (e.g. "1:1" = 1 adult per 1 child)
+      const ratio = (event.supervision_ratio || '1:1').split(':').map(Number);
+      const requiredAdults = Math.ceil(childCount * (ratio[0] / ratio[1]));
+      if (adultCount < requiredAdults) {
+        return res.status(400).json({
+          error: `At least ${requiredAdults} adult ticket(s) required for ${childCount} child ticket(s) (${event.supervision_ratio} adult-to-child ratio).`
+        });
       }
     }
 
@@ -75,29 +70,6 @@ router.post('/checkout', async (req, res) => {
     let totalPence = 0;
     const lineItems = [];
     const orderItems = [];
-
-    // Check combined skater capacity (excludes spectator ticket types)
-    if (event.capacity) {
-      const allTicketTypes = db.prepare('SELECT * FROM ticket_types WHERE event_id = ?').all(eventId);
-      const totalSkatersSold = allTicketTypes
-        .filter(tt => !tt.name.toLowerCase().includes('spectator'))
-        .reduce((sum, tt) => sum + tt.sold, 0);
-      const skatersInOrder = items.reduce((sum, item) => {
-        const tt = allTicketTypes.find(t => t.id === item.ticketTypeId);
-        if (tt && !tt.name.toLowerCase().includes('spectator')) {
-          return sum + item.quantity;
-        }
-        return sum;
-      }, 0);
-      const remaining = event.capacity - totalSkatersSold;
-      if (skatersInOrder > remaining) {
-        return res.status(400).json({
-          error: remaining <= 0
-            ? 'This session is sold out — no skater spots remaining'
-            : `Only ${remaining} skater spot${remaining === 1 ? '' : 's'} remaining for this session`
-        });
-      }
-    }
 
     for (const item of items) {
       const ticketType = db.prepare('SELECT * FROM ticket_types WHERE id = ? AND event_id = ?').get(item.ticketTypeId, eventId);
@@ -203,21 +175,39 @@ router.post('/checkout', async (req, res) => {
 
     totalPence += addonTotal;
 
-    // Calculate booking fee (covers Stripe processing: 1.5% + 20p)
-    const bookingFeePence = Math.ceil(totalPence * 0.015) + 20;
-    totalPence += bookingFeePence;
+    // Calculate ticket protection fee
+    let protectionTotal = 0;
+    let protectionOpted = 0;
 
-    lineItems.push({
-      price_data: {
-        currency: 'gbp',
-        product_data: {
-          name: 'Booking Fee',
-          description: 'Online booking and payment processing fee',
-        },
-        unit_amount: bookingFeePence
-      },
-      quantity: 1
-    });
+    if (protectTickets) {
+      const tiers = db.prepare('SELECT * FROM protection_tiers WHERE active = 1 ORDER BY sort_order ASC').all();
+
+      for (const item of orderItems) {
+        const tier = tiers.find(t =>
+          item.price >= t.min_price && (t.max_price === null || item.price <= t.max_price)
+        );
+        if (tier) {
+          protectionTotal += tier.fee * item.quantity;
+        }
+      }
+
+      if (protectionTotal > 0) {
+        protectionOpted = 1;
+        totalPence += protectionTotal;
+
+        lineItems.push({
+          price_data: {
+            currency: 'gbp',
+            product_data: {
+              name: 'Ticket Protection',
+              description: 'Protect your tickets against cancellation due to illness, injury, or unforeseen circumstances',
+            },
+            unit_amount: protectionTotal
+          },
+          quantity: 1
+        });
+      }
+    }
 
     // Validate required waivers
     const requiredWaivers = db.prepare(`
@@ -236,16 +226,28 @@ router.post('/checkout', async (req, res) => {
       }
     }
 
+    // Calculate booking fee (1.5% + 20p)
+    let bookingFee = 0;
+    if (totalPence > 0) {
+      bookingFee = Math.ceil(totalPence * 0.015) + 20;
+      lineItems.push({
+        price_data: {
+          currency: 'gbp',
+          product_data: {
+            name: 'Booking Fee',
+            description: 'Transaction and processing fee',
+          },
+          unit_amount: bookingFee
+        },
+        quantity: 1
+      });
+    }
+
+    const grandTotal = totalPence + bookingFee;
+
     // Create pending order
     const orderRef = generateOrderRef();
     const appUrl = process.env.APP_URL || 'http://localhost:5173';
-
-    // Store order items, addons, and waivers in DB (not Stripe metadata — 500 char limit)
-    const pendingData = JSON.stringify({
-      order_items: orderItems,
-      addon_selections: validatedAddons.length > 0 ? validatedAddons : undefined,
-      waiver_acceptances: waiverAcceptances && waiverAcceptances.length > 0 ? waiverAcceptances : undefined
-    });
 
     const session = await createCheckoutSession({
       lineItems,
@@ -256,14 +258,19 @@ router.post('/checkout', async (req, res) => {
       cancelUrl: `${appUrl}/events/${event.slug}`,
       metadata: {
         event_id: String(event.id),
-        order_ref: orderRef
+        order_items: JSON.stringify(orderItems),
+        addon_selections: validatedAddons.length > 0 ? JSON.stringify(validatedAddons) : undefined,
+        waiver_acceptances: waiverAcceptances && waiverAcceptances.length > 0 ? JSON.stringify(waiverAcceptances) : undefined,
+        protection_opted: String(protectionOpted),
+        protection_fee: String(protectionTotal),
+        marketing_opt_in: marketingOptIn ? "1" : "0"
       }
     });
 
     db.prepare(`
-      INSERT INTO orders (order_ref, event_id, customer_name, customer_email, customer_phone, total, status, stripe_session_id, pending_data)
-      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-    `).run(orderRef, eventId, customerName, customerEmail, customerPhone || null, totalPence, session.id, pendingData);
+      INSERT INTO orders (order_ref, event_id, customer_name, customer_email, customer_phone, total, booking_fee, status, stripe_session_id, protection_opted, protection_fee, marketing_opt_in)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+    `).run(orderRef, eventId, customerName, customerEmail, customerPhone || null, grandTotal, bookingFee, session.id, protectionOpted, protectionTotal, marketingOptIn ? 1 : 0);
 
     res.json({ url: session.url, orderRef });
   } catch (err) {
@@ -292,6 +299,7 @@ router.post('/webhook', async (req, res) => {
         const session = event.data.object;
         const orderRef = session.metadata.order_ref;
         const eventId = parseInt(session.metadata.event_id, 10);
+        const orderItems = JSON.parse(session.metadata.order_items);
 
         const order = db.prepare('SELECT * FROM orders WHERE order_ref = ?').get(orderRef);
         if (!order) {
@@ -299,23 +307,19 @@ router.post('/webhook', async (req, res) => {
           break;
         }
 
-        // Parse order data from DB (preferred) or fall back to Stripe metadata
-        let pendingData = {};
-        try {
-          pendingData = order.pending_data ? JSON.parse(order.pending_data) : {};
-        } catch (e) {
-          console.error('Error parsing pending_data:', e);
-        }
-        const orderItems = pendingData.order_items || (session.metadata.order_items ? JSON.parse(session.metadata.order_items) : []);
+        // Update order status (including protection fields from metadata)
+        const protectionOpted = session.metadata.protection_opted === '1' ? 1 : 0;
+        const protectionFee = parseInt(session.metadata.protection_fee || '0', 10);
 
-        // Update order status
         db.prepare(`
           UPDATE orders SET
             status = 'paid',
             stripe_payment_intent = ?,
+            protection_opted = ?,
+            protection_fee = ?,
             updated_at = datetime('now')
           WHERE id = ?
-        `).run(session.payment_intent, order.id);
+        `).run(session.payment_intent, protectionOpted, protectionFee, order.id);
 
         // Generate tickets
         const tickets = [];
@@ -345,9 +349,10 @@ router.post('/webhook', async (req, res) => {
         generateTickets();
 
         // Store addon selections
-        const addonSels = pendingData.addon_selections || (session.metadata.addon_selections ? JSON.parse(session.metadata.addon_selections) : null);
-        if (addonSels && addonSels.length > 0) {
+        const addonSelectionsRaw = session.metadata.addon_selections;
+        if (addonSelectionsRaw) {
           try {
+            const addonSels = JSON.parse(addonSelectionsRaw);
             const insertAddonSel = db.prepare(`
               INSERT INTO order_addon_selections (order_id, ticket_id, addon_id, addon_option_id, selected_option, quantity, price)
               VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -385,9 +390,10 @@ router.post('/webhook', async (req, res) => {
         }
 
         // Store waiver acceptances
-        const waiverAccs = pendingData.waiver_acceptances || (session.metadata.waiver_acceptances ? JSON.parse(session.metadata.waiver_acceptances) : null);
-        if (waiverAccs && waiverAccs.length > 0) {
+        const waiverAcceptancesRaw = session.metadata.waiver_acceptances;
+        if (waiverAcceptancesRaw) {
           try {
+            const waiverAccs = JSON.parse(waiverAcceptancesRaw);
             const insertWaiverAcc = db.prepare(`
               INSERT INTO waiver_acceptances (order_id, waiver_id, ip_address, user_agent)
               VALUES (?, ?, ?, ?)
@@ -400,23 +406,10 @@ router.post('/webhook', async (req, res) => {
           }
         }
 
-        // Check if event is now sold out (by combined skater capacity or all types exhausted)
+        // Check if event is now sold out
         const ticketTypes = db.prepare('SELECT * FROM ticket_types WHERE event_id = ?').all(eventId);
-        const eventData2 = db.prepare('SELECT capacity FROM events WHERE id = ?').get(eventId);
-        let isSoldOut = false;
-
-        if (eventData2.capacity) {
-          // Combined skater cap: count all non-spectator sold tickets
-          const totalSkatersSold = ticketTypes
-            .filter(tt => !tt.name.toLowerCase().includes('spectator'))
-            .reduce((sum, tt) => sum + tt.sold, 0);
-          isSoldOut = totalSkatersSold >= eventData2.capacity;
-        } else {
-          // Fallback: all ticket types individually exhausted
-          isSoldOut = ticketTypes.every(tt => tt.sold >= tt.quantity);
-        }
-
-        if (isSoldOut) {
+        const allSoldOut = ticketTypes.every(tt => tt.sold >= tt.quantity);
+        if (allSoldOut) {
           db.prepare("UPDATE events SET status = 'sold-out', updated_at = datetime('now') WHERE id = ?").run(eventId);
         }
 
@@ -439,7 +432,7 @@ router.post('/webhook', async (req, res) => {
           });
         }
 
-        console.log(`Order ${orderRef} completed: ${tickets.length} tickets generated`);
+        console.log(`Order ${orderRef} completed: ${tickets.length} tickets generated${protectionOpted ? ' (protected)' : ''}`);
         break;
       }
 

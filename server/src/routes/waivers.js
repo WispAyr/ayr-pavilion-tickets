@@ -36,8 +36,18 @@ const WAIVER_TEMPLATES = [
     name: 'General Event Terms & Conditions',
     content: `<h3>Event Terms & Conditions</h3>
 <p>By purchasing tickets for this event at Ayr Pavilion, I agree to the following terms:</p>
+
+<h4>Cancellation & Refund Policy</h4>
 <ul>
-<li><strong>No Refunds:</strong> All ticket sales are final. Refunds will only be issued if the event is cancelled by the venue.</li>
+<li><strong>Without Ticket Protection:</strong> All ticket sales are final and non-refundable. Refunds will only be issued if the event is cancelled or postponed by the organiser.</li>
+<li><strong>With Ticket Protection:</strong> If you have purchased Ticket Protection, you may submit a cancellation request if you are unable to attend due to illness, injury, bereavement, or other unforeseen circumstances. All claims are reviewed by the venue and approval is not guaranteed. The Ticket Protection fee itself is non-refundable. Claims must be submitted at least 24 hours before the event start time.</li>
+<li><strong>Event Cancellation:</strong> If the event is cancelled by the organiser, a full refund will be issued to all ticket holders regardless of protection status.</li>
+<li><strong>Event Postponement:</strong> If the event is rescheduled, tickets will be valid for the new date. Refund requests due to rescheduling will be considered on a case-by-case basis.</li>
+<li><strong>Transfers:</strong> Tickets are non-transferable unless authorised by the venue.</li>
+</ul>
+
+<h4>General Terms</h4>
+<ul>
 <li><strong>Age Restrictions:</strong> Any age restrictions listed for the event must be adhered to. Proof of age may be required.</li>
 <li><strong>Behaviour:</strong> All attendees are expected to behave in a respectful manner. Anti-social behaviour, intoxication, or disruptive conduct may result in removal from the venue without refund.</li>
 <li><strong>Right to Refuse Entry:</strong> Ayr Pavilion reserves the right to refuse entry to any person at its discretion.</li>

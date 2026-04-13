@@ -219,9 +219,10 @@ export async function fetchTicket(code) {
 }
 
 // ─── Scanner ────────────────────────────────────────────────
-export function scanTicket(code, pin, device_id) {
+export function scanTicket(code, pin, device_id, expected_event_id) {
   const body = { code };
   if (device_id) body.device_id = device_id;
+  if (expected_event_id) body.expected_event_id = expected_event_id;
   return request('/scan', {
     method: 'POST',
     headers: { 'X-Scanner-Pin': pin },
@@ -242,6 +243,12 @@ export function fetchScanStats(eventId, pin) {
   });
 }
 
+export function fetchCurrentEvent(pin) {
+  return request('/scan/current-event', {
+    headers: { 'X-Scanner-Pin': pin },
+  });
+}
+
 // ─── Admin Auth ─────────────────────────────────────────────
 export async function adminLogin(username, password) {
   const data = await request('/admin/login', {
@@ -253,6 +260,7 @@ export async function adminLogin(username, password) {
     localStorage.setItem('admin_username', data.username || username);
     localStorage.setItem('admin_role', data.role || 'admin');
     localStorage.setItem('admin_display_name', data.displayName || data.username || username);
+    localStorage.setItem('admin_financials', data.canSeeFinancials ? '1' : '0');
   }
   return data;
 }
@@ -262,6 +270,7 @@ export function adminLogout() {
   localStorage.removeItem('admin_username');
   localStorage.removeItem('admin_role');
   localStorage.removeItem('admin_display_name');
+  localStorage.removeItem('admin_financials');
 }
 
 export function isAdminLoggedIn() {
@@ -274,6 +283,10 @@ export function getAdminRole() {
 
 export function getAdminDisplayName() {
   return localStorage.getItem('admin_display_name') || 'Admin';
+}
+
+export function canSeeFinancials() {
+  return localStorage.getItem('admin_financials') === '1';
 }
 
 // ─── Forgot / Reset Password ────────────────────────────────
@@ -424,4 +437,84 @@ export function generateSocialPost(eventId, data) {
     method: 'POST',
     body: JSON.stringify(data),
   });
+}
+
+// ─── Ticket Protection ──────────────────────────────────────
+export function fetchProtectionTiers() {
+  return request("/protection/tiers");
+}
+
+export function calculateProtection(items) {
+  return request("/protection/calculate", {
+    method: "POST",
+    body: JSON.stringify({ items }),
+  });
+}
+
+// ─── Protection Claims (Admin) ──────────────────────────────
+export function fetchProtectionClaims(params = {}) {
+  const query = new URLSearchParams(params).toString();
+  const qs = query ? `?${query}` : "";
+  return authRequest("/admin/protection/claims" + qs);
+}
+
+export function approveClaim(id, notes) {
+  return authRequest("/admin/protection/claims/" + id + "/approve", {
+    method: "PUT",
+    body: JSON.stringify({ notes }),
+  });
+}
+
+export function denyClaim(id, notes) {
+  return authRequest("/admin/protection/claims/" + id + "/deny", {
+    method: "PUT",
+    body: JSON.stringify({ notes }),
+  });
+}
+
+// ─── Comp Codes ─────────────────────────────────────────────
+export function validateCompCode(code) {
+  return request("/comps/" + code + "/validate");
+}
+
+export function compCheckout(code, data) {
+  return request("/comps/" + code + "/checkout", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function fetchCompCodes() {
+  return authRequest("/admin/comps");
+}
+
+export function createCompCode(data) {
+  return authRequest("/admin/comps", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateCompCode(id, data) {
+  return authRequest("/admin/comps/" + id, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteCompCode(id) {
+  return authRequest("/admin/comps/" + id, {
+    method: "DELETE",
+  });
+}
+
+export function sendCompInvite(id, email) {
+  return authRequest("/admin/comps/" + id + "/send-invite", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+}
+
+export function resetCompCode(id) {
+  return authRequest("/admin/comps/" + id + "/reset", { method: "POST" });
 }

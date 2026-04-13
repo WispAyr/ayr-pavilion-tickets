@@ -5,9 +5,9 @@ import {
   ShoppingCart, QrCode, Package, Users, Clock, TrendingUp,
   AlertTriangle, CheckCircle, ChevronDown, ChevronUp, Download,
 } from 'lucide-react';
-import { fetchEventOps } from '../../lib/api';
+import { fetchEventOps, canSeeFinancials } from '../../lib/api';
 
-function fmt(pence) { return `£${(pence / 100).toFixed(2)}`; }
+function fmt(pence) { return `£${((pence || 0) / 100).toFixed(2)}`; }
 function pct(a, b) { return b ? Math.round((a / b) * 100) : 0; }
 function fmtDate(d) {
   if (!d) return '—';
@@ -114,10 +114,10 @@ function exportCSV(data) {
   // Orders & Revenue
   add('ORDERS & REVENUE');
   add('Metric', 'Value');
-  add('Total Revenue', fmt(orders.revenue));
+  if (canSeeFinancials()) add('Total Revenue', fmt(orders.revenue));
   add('Booking Fees', fmt(orders.total_fees));
   add('Refunds', fmt(orders.total_refunds));
-  add('Net Revenue', fmt(orders.revenue - orders.total_refunds));
+  if (canSeeFinancials()) add('Net Revenue', fmt(orders.revenue - orders.total_refunds));
   add('Paid Orders', orders.paid);
   add('Pending Orders', orders.pending);
   add('Refunded Orders', orders.refunded);

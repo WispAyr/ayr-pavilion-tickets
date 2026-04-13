@@ -485,5 +485,11 @@ function DoorInterface({ pin, userName }) {
 // ─── Page Wrapper ───────────────────────────────────────────
 
 export default function DoorPage() {
-  return <DoorInterface pin={null} userName="Staff" />;
+  const [auth, setAuth] = useState(null);
+
+  if (!auth) {
+    return <PinEntry onAuthenticated={(pin, name) => setAuth({ pin, name })} />;
+  }
+
+  return <DoorInterface pin={auth.pin} userName={auth.name} />;
 }

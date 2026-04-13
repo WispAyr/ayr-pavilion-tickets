@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import {
-  Users, UserPlus, Trash2, Edit3, Check, X, Shield, Loader2, Key, ToggleLeft, ToggleRight, Crown, UserCheck, User,
+  Users, UserPlus, Trash2, Edit3, Check, X, Shield, Loader2, Key, ToggleLeft, ToggleRight, Crown, UserCheck, User, DollarSign,
 } from 'lucide-react';
 import { fetchUsers, createUser, updateUser, deleteUser, changeUserPassword } from '../../lib/api';
 
@@ -154,6 +154,10 @@ export default function UsersPage() {
                       <option value="owner">Owner</option>
                     </select>
                   </div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={editForm.can_see_financials || false} onChange={e => setEditForm({ ...editForm, can_see_financials: e.target.checked })} className="w-4 h-4 rounded border-pavilion-600 bg-pavilion-700 text-gold-500 focus:ring-gold-500" />
+                    <span className="text-sm text-gray-400">Can see financials</span>
+                  </label>
                   <div className="flex gap-2">
                     <button onClick={() => handleUpdate(user.id)} disabled={saving} className="p-2 bg-green-500/20 text-green-400 rounded-lg hover:bg-green-500/30"><Check className="w-4 h-4" /></button>
                     <button onClick={() => setEditId(null)} className="p-2 bg-pavilion-700 text-gray-400 rounded-lg hover:text-white"><X className="w-4 h-4" /></button>
@@ -179,6 +183,7 @@ export default function UsersPage() {
                       <span className={`px-2 py-0.5 text-xs rounded-full flex items-center gap-1 ${badge.cls}`}>
                         <BadgeIcon className="w-3 h-3" />{badge.label}
                       </span>
+                      {user.can_see_financials ? <span className="px-2 py-0.5 bg-green-500/20 text-green-400 text-xs rounded-full flex items-center gap-1"><DollarSign className="w-3 h-3" />Financials</span> : null}
                       {!user.active && <span className="px-2 py-0.5 bg-red-500/20 text-red-400 text-xs rounded-full">Disabled</span>}
                     </div>
                     <div className="flex items-center gap-3 mt-1 text-xs text-gray-500">
@@ -191,7 +196,7 @@ export default function UsersPage() {
                       {user.active ? <ToggleRight className="w-5 h-5 text-green-400" /> : <ToggleLeft className="w-5 h-5 text-red-400" />}
                     </button>
                     <button onClick={() => { setPwId(user.id); setNewPw(''); }} title="Change password" className="p-2 text-gray-500 hover:text-gold-400 transition-all"><Key className="w-4 h-4" /></button>
-                    <button onClick={() => { setEditId(user.id); setEditForm({ display_name: user.display_name, email: user.email, role: user.role }); }} title="Edit" className="p-2 text-gray-500 hover:text-white transition-all"><Edit3 className="w-4 h-4" /></button>
+                    <button onClick={() => { setEditId(user.id); setEditForm({ display_name: user.display_name, email: user.email, role: user.role, can_see_financials: !!user.can_see_financials }); }} title="Edit" className="p-2 text-gray-500 hover:text-white transition-all"><Edit3 className="w-4 h-4" /></button>
                     <button onClick={() => handleDelete(user)} title="Delete" className="p-2 text-gray-500 hover:text-red-400 transition-all"><Trash2 className="w-4 h-4" /></button>
                   </div>
                 </div>

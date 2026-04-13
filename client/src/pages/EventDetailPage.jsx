@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, useSearchParams, Link, useNavigate } from 'react-router-dom';
 import {
   Calendar,
   MapPin,
@@ -16,8 +16,9 @@ import {
   Users,
   AlertCircle,
   ShieldCheck,
+  Gift,
 } from 'lucide-react';
-import { fetchEvent, createCheckout } from '../lib/api';
+import { fetchEvent, createCheckout, calculateProtection, validateCompCode, compCheckout } from '../lib/api';
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -220,6 +221,66 @@ function WaiverAcceptance({ waiver, accepted, onToggle }) {
   );
 }
 
+// ─── Ticket Protection Component ────────────────────────────
+
+function TicketProtectionSelector({ protectTickets, setProtectTickets, protectionFee, protectionLoading }) {
+  return (
+    <div className="space-y-2 pt-2">
+      <p className="text-sm text-gray-400 font-medium flex items-center gap-1.5">
+        <ShieldCheck className="w-4 h-4 text-green-400" />
+        Ticket Protection
+      </p>
+      <div className="bg-pavilion-700/50 border border-pavilion-600/30 rounded-xl overflow-hidden">
+        {/* YES option */}
+        <label className={`flex items-start gap-3 p-4 cursor-pointer transition-colors ${protectTickets ? 'bg-green-500/10 border-b border-green-500/20' : 'border-b border-pavilion-600/20 hover:bg-pavilion-700/80'}`}>
+          <input
+            type="radio"
+            name="protection"
+            checked={protectTickets === true}
+            onChange={() => setProtectTickets(true)}
+            className="mt-1 w-4 h-4 border-pavilion-600 bg-pavilion-700 text-green-500 focus:ring-green-500/50"
+          />
+          <div className="flex-1 min-w-0">
+            <span className="text-sm font-medium text-white">
+              YES, protect my tickets
+              <span className="text-green-400 text-xs ml-2 font-normal">Recommended</span>
+            </span>
+            {protectionFee > 0 && (
+              <span className="text-green-400 text-sm ml-2 font-medium">{formatPrice(protectionFee)}</span>
+            )}
+            {protectionLoading && <Loader2 className="inline w-3 h-3 ml-2 animate-spin text-gray-400" />}
+            <p className="text-xs text-gray-500 mt-1 leading-relaxed">
+              Get a refund if you can't attend due to illness, injury, or unforeseen circumstances.
+              Claims reviewed by the venue.
+              {' '}
+              <Link to="/ticket-protection" target="_blank" className="text-gold-400 hover:text-gold-300 underline underline-offset-2">
+                Full details
+              </Link>
+            </p>
+          </div>
+        </label>
+
+        {/* NO option */}
+        <label className={`flex items-start gap-3 p-4 cursor-pointer transition-colors ${protectTickets === false ? 'bg-pavilion-700/80' : 'hover:bg-pavilion-700/80'}`}>
+          <input
+            type="radio"
+            name="protection"
+            checked={protectTickets === false}
+            onChange={() => setProtectTickets(false)}
+            className="mt-1 w-4 h-4 border-pavilion-600 bg-pavilion-700 text-gold-500 focus:ring-gold-500/50"
+          />
+          <div className="flex-1 min-w-0">
+            <span className="text-sm text-gray-300">NO, I do not want to protect my tickets</span>
+            <p className="text-xs text-gray-500 mt-1">
+              Your tickets will be non-refundable unless the event is cancelled by the organiser.
+            </p>
+          </div>
+        </label>
+      </div>
+    </div>
+  );
+}
+
 // ─── Order Summary Sidebar ──────────────────────────────────
 
 function OrderSummary({
@@ -242,9 +303,16 @@ function OrderSummary({
   termsAccepted,
   setTermsAccepted,
   needsAdult,
+  protectTickets,
+  setProtectTickets,
+  protectionFee,
+  protectionLoading,
+  compMode,
+  marketingOptIn,
+  setMarketingOptIn,
 }) {
   const selected = ticketTypes.filter((tt) => quantities[tt.id] > 0);
-  const grandTotal = totalPrice + addonTotal;
+  const grandTotal = compMode ? 0 : totalPrice + addonTotal + (protectTickets ? protectionFee : 0);
 
   // Summarize addon selections for display
   const addonSummary = [];
@@ -267,6 +335,13 @@ function OrderSummary({
         <p className="text-gray-500 text-sm">Select tickets to continue</p>
       ) : (
         <>
+          {compMode && (
+            <div className="bg-green-500/10 border border-green-500/30 rounded-lg px-3 py-2 mb-4 flex items-center gap-2">
+              <Gift className="w-4 h-4 text-green-400 flex-shrink-0" />
+              <span className="text-green-400 text-sm font-medium">Complimentary Tickets</span>
+            </div>
+          )}
+
           <div className="space-y-3 mb-4">
             {selected.map((tt) => (
               <div key={tt.id} className="flex justify-between text-sm">
@@ -275,7 +350,7 @@ function OrderSummary({
                   <span className="text-gray-500"> x{quantities[tt.id]}</span>
                 </div>
                 <span className="text-white font-medium">
-                  {formatPrice(tt.price * quantities[tt.id])}
+                  {compMode ? <span className="text-green-400">Comp</span> : formatPrice(tt.price * quantities[tt.id])}
                 </span>
               </div>
             ))}
@@ -290,6 +365,15 @@ function OrderSummary({
                 )}
               </div>
             ))}
+            {protectTickets && protectionFee > 0 && (
+              <div className="flex justify-between text-sm">
+                <div className="flex items-center gap-1.5">
+                  <ShieldCheck className="w-3.5 h-3.5 text-green-400" />
+                  <span className="text-green-400">Ticket Protection</span>
+                </div>
+                <span className="text-white font-medium">{formatPrice(protectionFee)}</span>
+              </div>
+            )}
           </div>
 
           {grandTotal > 0 && (() => {
@@ -331,9 +415,9 @@ function OrderSummary({
               <button
                 onClick={() => setShowCheckout(true)}
                 disabled={needsAdult}
-                className="w-full py-3 bg-gold-500 hover:bg-gold-600 text-pavilion-900 font-bold rounded-lg transition-all text-lg disabled:opacity-40 disabled:cursor-not-allowed"
+                className={`w-full py-3 font-bold rounded-lg transition-all text-lg disabled:opacity-40 disabled:cursor-not-allowed ${compMode ? 'bg-green-500 hover:bg-green-600 text-white' : 'bg-gold-500 hover:bg-gold-600 text-pavilion-900'}`}
               >
-                Buy Tickets
+                {compMode ? 'Claim Tickets' : 'Buy Tickets'}
               </button>
             </>
 
@@ -364,6 +448,16 @@ function OrderSummary({
                 className="w-full px-3 py-2.5 bg-pavilion-700 border border-pavilion-600 rounded-lg text-white placeholder-gray-500 focus:border-gold-500 focus:outline-none text-sm"
               />
 
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={marketingOptIn}
+                  onChange={(e) => setMarketingOptIn(e.target.checked)}
+                  className="w-4 h-4 rounded border-pavilion-600 bg-pavilion-700 text-gold-500 focus:ring-gold-500 accent-amber-500"
+                />
+                <span className="text-sm text-gray-400">Keep me updated about future events and offers from Ayr Pavilion</span>
+              </label>
+
               {/* Waivers */}
               {waivers && waivers.length > 0 && (
                 <div className="space-y-2 pt-2">
@@ -380,6 +474,16 @@ function OrderSummary({
                     />
                   ))}
                 </div>
+              )}
+
+              {/* Ticket Protection (hidden in comp mode) */}
+              {!compMode && (
+                <TicketProtectionSelector
+                  protectTickets={protectTickets}
+                  setProtectTickets={setProtectTickets}
+                  protectionFee={protectionFee}
+                  protectionLoading={protectionLoading}
+                />
               )}
 
               {/* Terms & Conditions */}
@@ -402,11 +506,11 @@ function OrderSummary({
 
               <button
                 type="submit"
-                disabled={checkoutLoading || !termsAccepted || needsAdult}
-                className="w-full py-3 bg-gold-500 hover:bg-gold-600 text-pavilion-900 font-bold rounded-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={checkoutLoading || !termsAccepted || needsAdult || (!compMode && protectTickets === null)}
+                className={`w-full py-3 font-bold rounded-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed ${compMode ? 'bg-green-500 hover:bg-green-600 text-white' : 'bg-gold-500 hover:bg-gold-600 text-pavilion-900'}`}
               >
                 {checkoutLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-                Pay {formatPrice(grandTotal + (grandTotal > 0 ? Math.ceil(grandTotal * 0.015) + 20 : 0))}
+                {compMode ? 'Claim Tickets' : `Pay ${formatPrice(grandTotal + (grandTotal > 0 ? Math.ceil(grandTotal * 0.015) + 20 : 0))}`}
               </button>
               <button
                 type="button"
@@ -427,9 +531,14 @@ function OrderSummary({
 
 export default function EventDetailPage() {
   const { slug } = useParams();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const compCode = searchParams.get('comp');
+
   const [event, setEvent] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [compMode, setCompMode] = useState(null); // null = not comp, object = valid comp info
 
   const [quantities, setQuantities] = useState({});
   const [customerInfo, setCustomerInfo] = useState({ name: '', email: '', phone: '' });
@@ -446,17 +555,27 @@ export default function EventDetailPage() {
   // Per-ticket accordion state
   const [expandedTickets, setExpandedTickets] = useState({});
 
+  // Ticket protection state
+  const [protectTickets, setProtectTickets] = useState(null);
+  const [marketingOptIn, setMarketingOptIn] = useState(false); // null = not chosen, true/false = chosen
+  const [protectionFee, setProtectionFee] = useState(0);
+  const [protectionLoading, setProtectionLoading] = useState(false);
+
   const countdown = useCountdown(event?.date);
 
   useEffect(() => {
     setLoading(true);
-    fetchEvent(slug)
-      .then((ev) => {
+    const promises = [fetchEvent(slug)];
+    if (compCode) promises.push(validateCompCode(compCode).catch(() => null));
+
+    Promise.all(promises)
+      .then(([ev, comp]) => {
         setEvent(ev);
+        if (comp && comp.valid) setCompMode(comp);
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [slug]);
+  }, [slug, compCode]);
 
   const ticketTypes = event?.ticketTypes || [];
   const addons = (event?.addons || []).map(a => ({ ...a, ticketTypeIds: a.ticket_type_ids || a.ticketTypeIds || [] }));
@@ -482,6 +601,24 @@ export default function EventDetailPage() {
       return sum + (sel.price || 0) * (sel.quantity || 1);
     }, 0);
   }, [addonSelections]);
+
+  // Calculate protection fee when ticket selection changes
+  useEffect(() => {
+    const items = Object.entries(quantities)
+      .filter(([, qty]) => qty > 0)
+      .map(([ticketTypeId, quantity]) => ({ ticketTypeId: parseInt(ticketTypeId, 10), quantity }));
+
+    if (items.length === 0) {
+      setProtectionFee(0);
+      return;
+    }
+
+    setProtectionLoading(true);
+    calculateProtection(items)
+      .then((result) => setProtectionFee(result.totalFee || 0))
+      .catch(() => setProtectionFee(0))
+      .finally(() => setProtectionLoading(false));
+  }, [quantities]);
 
   // Adult supervision check — true if child tickets selected without an adult
   const needsAdult = useMemo(() => {
@@ -572,6 +709,13 @@ export default function EventDetailPage() {
     e.preventDefault();
     setCheckoutError(null);
     setCheckoutLoading(true);
+
+    // Validate protection choice
+    if (!compMode && protectTickets === null) {
+      setCheckoutError('Please select whether you want Ticket Protection');
+      setCheckoutLoading(false);
+      return;
+    }
 
     // Validate adult supervision rule
     if (event.requireAdultSupervision) {
@@ -670,19 +814,39 @@ export default function EventDetailPage() {
     }));
 
     try {
-      const result = await createCheckout({
-        eventId: event.id,
-        items,
-        customerName: customerInfo.name,
-        customerEmail: customerInfo.email,
-        customerPhone: customerInfo.phone,
-        addonSelections: addonSels.length > 0 ? addonSels : undefined,
-        waiverAcceptances: waiverAccs.length > 0 ? waiverAccs : undefined,
-      });
-      if (result.url) {
-        window.location.href = result.url;
+      if (compMode && compCode) {
+        // Comp checkout — no Stripe
+        const result = await compCheckout(compCode, {
+          eventId: event.id,
+          items,
+          customerName: customerInfo.name,
+          customerEmail: customerInfo.email,
+          customerPhone: customerInfo.phone,
+          addonSelections: addonSels.length > 0 ? addonSels : undefined,
+          waiverAcceptances: waiverAccs.length > 0 ? waiverAccs : undefined,
+          marketingOptIn,
+        });
+        if (result.orderRef) {
+          navigate(`/order/success?ref=${result.orderRef}`);
+        }
       } else {
-        setCheckoutError('No checkout URL returned.');
+        // Normal Stripe checkout
+        const result = await createCheckout({
+          eventId: event.id,
+          items,
+          customerName: customerInfo.name,
+          customerEmail: customerInfo.email,
+          customerPhone: customerInfo.phone,
+          addonSelections: addonSels.length > 0 ? addonSels : undefined,
+          waiverAcceptances: waiverAccs.length > 0 ? waiverAccs : undefined,
+          protectTickets: protectTickets || false,
+          marketingOptIn,
+        });
+        if (result.url) {
+          window.location.href = result.url;
+        } else {
+          setCheckoutError('No checkout URL returned.');
+        }
       }
     } catch (err) {
       setCheckoutError(err.message);
@@ -826,10 +990,18 @@ export default function EventDetailPage() {
               </div>
             )}
 
+            {/* Sold out banner */}
+            {event.status === "sold-out" && (
+              <div className="bg-red-500/10 border-2 border-red-500/40 rounded-xl p-6 text-center">
+                <p className="text-2xl font-black text-red-400 uppercase tracking-widest mb-2">Sold Out</p>
+                <p className="text-gray-400 text-sm">This event is no longer available for booking. Check back for future events.</p>
+              </div>
+            )}
+
             {/* Ticket selection */}
-            <div>
+            {event.status !== "sold-out" && <div>
               <h2 className="text-xl font-bold mb-4">Tickets</h2>
-              {event.requireAdultSupervision && (
+              {!!event.requireAdultSupervision && (
                 <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 mb-4 flex items-start gap-2">
                   <AlertCircle className="w-5 h-5 text-amber-400 mt-0.5 flex-shrink-0" />
                   <p className="text-amber-200 text-sm">
@@ -910,6 +1082,8 @@ export default function EventDetailPage() {
                 })}
               </div>
             </div>
+
+            }
 
             {/* Addons section */}
             {totalItems > 0 && relevantAddons.length > 0 && (
@@ -996,7 +1170,7 @@ export default function EventDetailPage() {
           </div>
 
           {/* Right column - Order Summary (desktop sidebar) */}
-          <div className="hidden lg:block">
+          {event.status !== "sold-out" && <div className="hidden lg:block">
             <div className="sticky top-24">
               <OrderSummary
                 ticketTypes={ticketTypes}
@@ -1018,20 +1192,27 @@ export default function EventDetailPage() {
                 termsAccepted={termsAccepted}
                 setTermsAccepted={setTermsAccepted}
                 needsAdult={needsAdult}
+                protectTickets={protectTickets}
+                setProtectTickets={setProtectTickets}
+                protectionFee={protectionFee}
+                protectionLoading={protectionLoading}
+                compMode={compMode}
+                marketingOptIn={marketingOptIn}
+                setMarketingOptIn={setMarketingOptIn}
               />
             </div>
-          </div>
+          </div>}
         </div>
       </div>
 
       {/* Mobile bottom bar */}
-      {totalItems > 0 && (
+      {totalItems > 0 && event.status !== "sold-out" && (
         <div className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-pavilion-800/95 backdrop-blur-md border-t border-pavilion-600/50 p-4 no-print">
           {!showCheckout ? (
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-gray-400">{totalItems} ticket{totalItems !== 1 ? 's' : ''}</p>
-                <p className="text-xl font-bold text-gold-400">{formatPrice(totalPrice + addonTotal)}</p>
+                <p className="text-xl font-bold text-gold-400">{formatPrice(totalPrice + addonTotal + (protectTickets ? protectionFee : 0))}</p>
                 {needsAdult && (
                   <p className="text-amber-400 text-xs mt-0.5 flex items-center gap-1">
                     <AlertCircle className="w-3 h-3" /> Add an adult ticket
@@ -1072,6 +1253,16 @@ export default function EventDetailPage() {
                 className="w-full px-3 py-2 bg-pavilion-700 border border-pavilion-600 rounded-lg text-white placeholder-gray-500 focus:border-gold-500 focus:outline-none text-sm"
               />
 
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={marketingOptIn}
+                  onChange={(e) => setMarketingOptIn(e.target.checked)}
+                  className="w-4 h-4 rounded border-pavilion-600 bg-pavilion-700 text-gold-500 focus:ring-gold-500 accent-amber-500"
+                />
+                <span className="text-sm text-gray-400">Keep me updated about future events and offers from Ayr Pavilion</span>
+              </label>
+
               {/* Waivers (mobile) */}
               {relevantWaivers.length > 0 && (
                 <div className="space-y-2">
@@ -1086,6 +1277,16 @@ export default function EventDetailPage() {
                 </div>
               )}
 
+              {/* Ticket Protection (mobile, hidden in comp mode) */}
+              {!compMode && (
+                <TicketProtectionSelector
+                  protectTickets={protectTickets}
+                  setProtectTickets={setProtectTickets}
+                  protectionFee={protectionFee}
+                  protectionLoading={protectionLoading}
+                />
+              )}
+
               {checkoutError && <p className="text-red-400 text-sm">{checkoutError}</p>}
               <div className="flex gap-2">
                 <button
@@ -1097,11 +1298,11 @@ export default function EventDetailPage() {
                 </button>
                 <button
                   type="submit"
-                  disabled={checkoutLoading || needsAdult}
-                  className="flex-1 px-4 py-2.5 bg-gold-500 hover:bg-gold-600 text-pavilion-900 font-bold rounded-lg transition-all disabled:opacity-50 flex items-center justify-center gap-2 text-sm"
+                  disabled={checkoutLoading || needsAdult || (!compMode && protectTickets === null)}
+                  className={`flex-1 px-4 py-2.5 font-bold rounded-lg transition-all disabled:opacity-50 flex items-center justify-center gap-2 text-sm ${compMode ? 'bg-green-500 hover:bg-green-600 text-white' : 'bg-gold-500 hover:bg-gold-600 text-pavilion-900'}`}
                 >
                   {checkoutLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-                  Pay {formatPrice(totalPrice + addonTotal + (totalPrice + addonTotal > 0 ? Math.ceil((totalPrice + addonTotal) * 0.015) + 20 : 0))}
+                  {compMode ? 'Claim Tickets' : (() => { const gt = totalPrice + addonTotal + (protectTickets ? protectionFee : 0); return `Pay ${formatPrice(gt + (gt > 0 ? Math.ceil(gt * 0.015) + 20 : 0))}`; })()}
                 </button>
               </div>
             </form>

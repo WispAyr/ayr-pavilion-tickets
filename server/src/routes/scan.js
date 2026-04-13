@@ -54,7 +54,8 @@ router.post('/', scannerAuth, (req, res) => {
       // Not a URL, use as-is
     }
 
-    console.log(`[SCAN] Code received: ${code}`);
+    const expected_event_id = req.body.expected_event_id ? parseInt(req.body.expected_event_id, 10) : null;
+    console.log(`[SCAN] Code received: ${code}, expected event: ${expected_event_id || "any"}`);
 
     const ticket = db.prepare(`
       SELECT
@@ -158,13 +159,17 @@ router.post('/', scannerAuth, (req, res) => {
       timestamp: new Date().toISOString()
     });
 
+    const wrongEvent = expected_event_id && ticket.event_id !== expected_event_id;
+
     res.json({
       result: 'valid',
-      message: 'Ticket verified - entry granted',
+      message: wrongEvent ? 'Valid ticket but WRONG SESSION' : 'Ticket verified - entry granted',
+      wrong_event: wrongEvent || false,
       ticket: {
         holder_name: ticket.holder_name || ticket.customer_name,
         ticket_type: ticket.ticket_type_name,
         event: ticket.event_title,
+        event_id: ticket.event_id,
         order_ref: ticket.order_ref,
         venue: ticket.venue,
         date_time: ticket.date_time
@@ -228,6 +233,76 @@ router.get('/stats/:eventId', scannerAuth, (req, res) => {
   } catch (err) {
     console.error('Error fetching scan stats:', err);
     res.status(500).json({ error: 'Failed to fetch scan statistics' });
+  }
+});
+
+
+// GET /api/scan/current-event — auto-detect the current or next event
+router.get("/current-event", scannerAuth, (req, res) => {
+  try {
+    const db = getDb();
+    const now = new Date().toISOString();
+
+    // 1. Find event currently in progress (doors_open <= now <= date_time + 4 hours)
+    const current = db.prepare(`
+      SELECT id, title, date_time, doors_open, venue, status
+      FROM events
+      WHERE status IN ('on-sale', 'sold-out')
+        AND datetime(COALESCE(doors_open, date_time)) <= datetime(?)
+        AND datetime(date_time, '+4 hours') >= datetime(?)
+      ORDER BY date_time ASC
+      LIMIT 1
+    `).get(now, now);
+
+    if (current) {
+      return res.json({ event: current, mode: "live", message: "Event in progress" });
+    }
+
+    // 2. Find next upcoming event (doors within the next 2 hours, or just the next event)
+    const upcoming = db.prepare(`
+      SELECT id, title, date_time, doors_open, venue, status
+      FROM events
+      WHERE status IN ('on-sale', 'sold-out')
+        AND datetime(date_time) > datetime(?)
+      ORDER BY date_time ASC
+      LIMIT 1
+    `).get(now);
+
+    if (upcoming) {
+      const doorsTime = new Date(upcoming.doors_open || upcoming.date_time);
+      const hoursUntilDoors = (doorsTime - new Date()) / (1000 * 60 * 60);
+      const mode = hoursUntilDoors <= 2 ? "pre-event" : "upcoming";
+      return res.json({ event: upcoming, mode, message: mode === "pre-event" ? "Doors opening soon" : "Next scheduled event" });
+    }
+
+    res.json({ event: null, mode: "none", message: "No upcoming events" });
+  } catch (err) {
+    console.error("Current event error:", err);
+    res.status(500).json({ error: "Failed to detect current event" });
+  }
+});
+
+// GET /api/scan/test-codes — returns dummy test codes for scanner testing
+router.get("/test-codes", (req, res) => {
+  try {
+    const db = getDb();
+    const valid = db.prepare(`
+      SELECT t.code, t.status, tt.name as type, e.title as event
+      FROM tickets t JOIN ticket_types tt ON t.ticket_type_id = tt.id
+      JOIN events e ON t.event_id = e.id
+      WHERE t.status = ?
+      ORDER BY RANDOM() LIMIT 4
+    `).all("valid");
+    const used = db.prepare(`
+      SELECT t.code, t.status, tt.name as type, e.title as event
+      FROM tickets t JOIN ticket_types tt ON t.ticket_type_id = tt.id
+      JOIN events e ON t.event_id = e.id
+      WHERE t.status = ?
+      ORDER BY RANDOM() LIMIT 2
+    `).all("used");
+    res.json({ valid, used, invalid: "TEST-INVALID-" + Date.now().toString(36).toUpperCase() });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch test codes" });
   }
 });
 

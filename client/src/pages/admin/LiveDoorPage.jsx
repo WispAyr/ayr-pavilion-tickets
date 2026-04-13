@@ -14,7 +14,7 @@ import {
   PoundSterling,
   Activity,
 } from 'lucide-react';
-import { fetchDoorStats, fetchEvents } from '../../lib/api';
+import { fetchDoorStats, fetchEvents, canSeeFinancials } from '../../lib/api';
 
 function StatCard({ icon: Icon, label, value, sub, color = 'gold' }) {
   const colors = {
@@ -275,8 +275,9 @@ export default function LiveDoorPage() {
             />
             <StatCard
               icon={PoundSterling}
-              label="Revenue"
-              value={`£${((stats.totalRevenue || 0) / 100).toFixed(0)}`}
+              label={canSeeFinancials() ? "Revenue" : ""}
+              value={canSeeFinancials() ? `£${((stats.totalRevenue || 0) / 100).toFixed(0)}` : ''}
+              hidden={!canSeeFinancials()}
               sub={`${stats.totalOrders || 0} orders`}
               color="purple"
             />

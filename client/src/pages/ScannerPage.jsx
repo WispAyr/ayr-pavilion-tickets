@@ -11,9 +11,10 @@ import {
   ChevronDown,
   Camera,
   Keyboard,
+  Usb,
 } from 'lucide-react';
-import { Html5Qrcode } from 'html5-qrcode';
-import { validateScannerPin, scanTicket, fetchScanStats, fetchEvents } from '../lib/api';
+import jsQR from 'jsqr';
+import { validateScannerPin, scanTicket, fetchScanStats, fetchEvents, fetchCurrentEvent } from '../lib/api';
 
 // ─── PIN Entry Screen ───────────────────────────────────────
 
@@ -119,8 +120,15 @@ function ScanResult({ result, onReset }) {
   const isValid = result.result === 'valid' || result.status === 'valid' || result.valid === true;
   const isAlreadyScanned = result.result === 'already_used' || result.status === 'already-scanned' || result.alreadyScanned === true;
 
+  const isWrongEvent = isValid && result.wrong_event;
+
   let bgClass, icon, title, subtitle;
-  if (isValid) {
+  if (isValid && isWrongEvent) {
+    bgClass = 'from-orange-900/80 to-orange-900/20 border-orange-500/50';
+    icon = <AlertTriangle className="w-20 h-20 text-orange-400" />;
+    title = 'WRONG SESSION';
+    subtitle = 'Valid ticket but for a DIFFERENT event/session';
+  } else if (isValid) {
     bgClass = 'from-green-900/80 to-green-900/20 border-green-500/50';
     icon = <CheckCircle2 className="w-20 h-20 text-green-400" />;
     title = 'VALID TICKET';
@@ -189,145 +197,349 @@ function ScanResult({ result, onReset }) {
 // ─── Camera QR Scanner ──────────────────────────────────────
 
 function CameraScanner({ onScan, enabled }) {
-  const scannerRef = useRef(null);
-  const html5QrRef = useRef(null);
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
   const lastScanRef = useRef(null);
+  const rafRef = useRef(null);
   const [error, setError] = useState(null);
   const [starting, setStarting] = useState(true);
 
-  const handleScan = useCallback((decodedText) => {
-    // Debounce — don't scan same code within 3 seconds
-    const now = Date.now();
-    if (lastScanRef.current && lastScanRef.current.text === decodedText && now - lastScanRef.current.time < 3000) {
-      return;
-    }
-    lastScanRef.current = { text: decodedText, time: now };
-
-    // Extract ticket code from URL or use raw code
-    let ticketCode = decodedText;
-    try {
-      const url = new URL(decodedText);
-      const parts = url.pathname.split('/');
-      const ticketsIdx = parts.indexOf('tickets');
-      if (ticketsIdx !== -1 && parts[ticketsIdx + 1]) {
-        ticketCode = parts[ticketsIdx + 1];
-      }
-    } catch {
-      // Not a URL, use raw value
-    }
-
-    onScan(ticketCode);
-  }, [onScan]);
-
   useEffect(() => {
     if (!enabled) return;
-
     let cancelled = false;
-    const containerId = 'qr-reader';
 
-    async function startScanner() {
+    async function start() {
       try {
-        // Small delay to ensure DOM element is mounted
-        await new Promise(r => setTimeout(r, 300));
-        if (cancelled) return;
-
-        const html5Qr = new Html5Qrcode(containerId);
-        html5QrRef.current = html5Qr;
-
-        // Use facingMode for mobile — more reliable than cameraId
-        const config = {
-          fps: 15,
-          qrbox: (viewfinderWidth, viewfinderHeight) => {
-            const minDim = Math.min(viewfinderWidth, viewfinderHeight);
-            const size = Math.floor(minDim * 0.7);
-            return { width: size, height: size };
-          },
-          aspectRatio: 1,
-          disableFlip: false,
-        };
-
-        if (cancelled) return;
-
-        await html5Qr.start(
-          { facingMode: 'environment' },
-          config,
-          handleScan,
-          () => {} // ignore per-frame no-QR errors
-        );
-
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" }, width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: false,
+        });
+        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
+        streamRef.current = stream;
+        const video = videoRef.current;
+        if (!video) return;
+        video.srcObject = stream;
+        video.setAttribute("playsinline", "true");
+        video.setAttribute("autoplay", "true");
+        await video.play();
         if (!cancelled) setStarting(false);
-      } catch (err) {
-        if (cancelled) return;
-        console.error('Camera error:', err);
 
-        // Fallback: try any available camera
-        try {
-          const cameras = await Html5Qrcode.getCameras();
-          if (cameras && cameras.length > 0 && !cancelled) {
-            const html5Qr = new Html5Qrcode(containerId);
-            html5QrRef.current = html5Qr;
-            await html5Qr.start(
-              cameras[cameras.length - 1].id,
-              { fps: 15, qrbox: { width: 250, height: 250 } },
-              handleScan,
-              () => {}
-            );
-            if (!cancelled) setStarting(false);
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+        function tick() {
+          if (cancelled || !video || video.readyState !== video.HAVE_ENOUGH_DATA) {
+            rafRef.current = requestAnimationFrame(tick);
             return;
           }
-        } catch {}
-
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "attemptBoth" });
+          if (code && code.data) {
+            const now = Date.now();
+            if (!lastScanRef.current || lastScanRef.current.text !== code.data || now - lastScanRef.current.time > 3000) {
+              lastScanRef.current = { text: code.data, time: now };
+              let ticketCode = code.data;
+              try {
+                const url = new URL(code.data);
+                const parts = url.pathname.split("/");
+                const idx = parts.indexOf("tickets");
+                if (idx !== -1 && parts[idx + 1]) ticketCode = parts[idx + 1];
+              } catch {}
+              onScan(ticketCode);
+            }
+          }
+          rafRef.current = requestAnimationFrame(tick);
+        }
+        rafRef.current = requestAnimationFrame(tick);
+      } catch (err) {
         if (!cancelled) {
-          setError(err.message || 'Failed to access camera');
+          console.error("Camera error:", err);
+          setError(err.message || "Failed to access camera");
           setStarting(false);
         }
       }
     }
-
-    startScanner();
+    start();
 
     return () => {
       cancelled = true;
-      if (html5QrRef.current) {
-        html5QrRef.current.stop().catch(() => {});
-        html5QrRef.current = null;
-      }
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
     };
-  }, [enabled, handleScan]);
+  }, [enabled, onScan]);
 
   if (error) {
     return (
       <div className="bg-red-900/20 border border-red-500/30 rounded-xl p-6 text-center">
         <XCircle className="w-10 h-10 text-red-400 mx-auto mb-3" />
         <p className="text-red-300 text-sm">{error}</p>
-        <p className="text-gray-500 text-xs mt-2">Make sure you've granted camera permissions and are using HTTPS</p>
+        <p className="text-gray-500 text-xs mt-2">Make sure you have granted camera permissions and are using HTTPS</p>
       </div>
     );
   }
 
   return (
-    <div className="relative">
+    <div className="relative rounded-xl overflow-hidden bg-black">
       {starting && (
-        <div className="absolute inset-0 flex items-center justify-center bg-pavilion-800 rounded-xl z-10">
+        <div className="absolute inset-0 flex items-center justify-center z-10 bg-pavilion-900/80">
           <div className="text-center">
             <Loader2 className="w-8 h-8 text-gold-400 animate-spin mx-auto mb-2" />
             <p className="text-gray-400 text-sm">Starting camera...</p>
           </div>
         </div>
       )}
-      <div
-        id="qr-reader"
-        ref={scannerRef}
-        className="rounded-xl overflow-hidden bg-pavilion-800"
-        style={{ minHeight: 320 }}
-      />
-      {!starting && (
-        <div className="absolute bottom-3 left-0 right-0 text-center pointer-events-none">
-          <span className="bg-black/60 text-white text-xs px-3 py-1 rounded-full">
-            Point at QR code on ticket
-          </span>
+      <video ref={videoRef} className="w-full rounded-xl" playsInline autoPlay muted />
+      <canvas ref={canvasRef} className="hidden" />
+      {/* Scan guide overlay */}
+      <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+        <div className="w-56 h-56 border-2 border-gold-400/50 rounded-2xl" />
+      </div>
+    </div>
+  );
+}
+
+// ─── Compact Scan Lane (for USB multi-lane) ────────────────
+
+function ScanLane({ laneId, label, result, scanning }) {
+  if (scanning) {
+    return (
+      <div className="flex-1 bg-blue-900/30 border-2 border-blue-500/50 rounded-2xl flex flex-col items-center justify-center p-4 min-h-[200px]">
+        <Loader2 className="w-12 h-12 text-blue-400 animate-spin mb-2" />
+        <p className="text-blue-300 font-bold text-sm">{label}</p>
+        <p className="text-blue-400/60 text-xs">Validating...</p>
+      </div>
+    );
+  }
+
+  if (!result) {
+    return (
+      <div className="flex-1 bg-pavilion-800/50 border-2 border-pavilion-600/30 border-dashed rounded-2xl flex flex-col items-center justify-center p-4 min-h-[200px]">
+        <QrCode className="w-12 h-12 text-pavilion-600 mb-2" />
+        <p className="text-gray-500 font-bold text-sm">{label}</p>
+        <p className="text-gray-600 text-xs">Waiting for scan...</p>
+      </div>
+    );
+  }
+
+  const isValid = result.result === 'valid' || result.status === 'valid' || result.valid === true;
+  const isAlreadyScanned = result.result === 'already_used' || result.status === 'already-scanned';
+  const isWrongEvent = isValid && result.wrong_event;
+
+  let bgClass, borderClass, icon, title, textColor;
+  if (isValid && isWrongEvent) {
+    bgClass = 'bg-orange-900/40'; borderClass = 'border-orange-500'; textColor = 'text-orange-400';
+    icon = <AlertTriangle className="w-16 h-16 text-orange-400" />;
+    title = 'WRONG SESSION';
+  } else if (isValid) {
+    bgClass = 'bg-green-900/40'; borderClass = 'border-green-500'; textColor = 'text-green-400';
+    icon = <CheckCircle2 className="w-16 h-16 text-green-400" />;
+    title = 'VALID';
+  } else if (isAlreadyScanned) {
+    bgClass = 'bg-amber-900/40'; borderClass = 'border-amber-500'; textColor = 'text-amber-400';
+    icon = <AlertTriangle className="w-16 h-16 text-amber-400" />;
+    title = 'ALREADY USED';
+  } else {
+    bgClass = 'bg-red-900/40'; borderClass = 'border-red-500'; textColor = 'text-red-400';
+    icon = <XCircle className="w-16 h-16 text-red-400" />;
+    title = 'INVALID';
+  }
+
+  return (
+    <div className={`flex-1 ${bgClass} border-2 ${borderClass} rounded-2xl flex flex-col items-center justify-center p-4 min-h-[200px] animate-fade-in`}>
+      {icon}
+      <p className={`${textColor} font-black text-xl tracking-wider mt-2`}>{title}</p>
+      <p className="text-gray-500 font-bold text-xs mt-1">{label}</p>
+      {result.ticket && (
+        <div className="mt-2 text-center">
+          {result.ticket.holder_name && <p className="text-white text-sm font-semibold">{result.ticket.holder_name}</p>}
+          {result.ticket.ticket_type && <p className="text-gray-400 text-xs">{result.ticket.ticket_type}</p>}
+          {result.ticket.event && <p className="text-gray-500 text-xs">{result.ticket.event}</p>}
         </div>
       )}
+      {result.error && <p className="text-gray-400 text-xs mt-1">{result.error}</p>}
+    </div>
+  );
+}
+
+// ─── USB Scanner Mode ───────────────────────────────────────
+
+function UsbScannerMode({ pin, selectedEvent }) {
+  const hiddenInputRef = useRef(null);
+  const bufferRef = useRef([]);
+  const staleTimerRef = useRef(null);
+  const nextLaneRef = useRef(1);
+  const [lanes, setLanes] = useState({ 1: { result: null, scanning: false } });
+  const [detectedScanners, setDetectedScanners] = useState(1);
+  const laneTimersRef = useRef({});
+
+  // Keep hidden input focused
+  useEffect(() => {
+    const el = hiddenInputRef.current;
+    if (el) el.focus();
+    const refocus = setInterval(() => {
+      if (hiddenInputRef.current && document.activeElement !== hiddenInputRef.current) {
+        hiddenInputRef.current.focus();
+      }
+    }, 200);
+    return () => clearInterval(refocus);
+  }, []);
+
+  // Auto-reset lanes after delay
+  const autoResetLane = useCallback((laneId, delay) => {
+    if (laneTimersRef.current[laneId]) clearTimeout(laneTimersRef.current[laneId]);
+    laneTimersRef.current[laneId] = setTimeout(() => {
+      setLanes(prev => ({ ...prev, [laneId]: { result: null, scanning: false } }));
+    }, delay);
+  }, []);
+
+  // Process a completed scan buffer
+  const processScan = useCallback(async (rawText) => {
+    // Check for prefix pattern: N|code
+    const prefixMatch = rawText.match(/^(\d+)\|(.+)$/);
+    let laneId, code;
+
+    if (prefixMatch) {
+      laneId = parseInt(prefixMatch[1], 10);
+      code = prefixMatch[2];
+      // Auto-expand lanes if new scanner detected
+      if (laneId > detectedScanners) {
+        setDetectedScanners(laneId);
+      }
+    } else {
+      // Round-robin assignment
+      laneId = nextLaneRef.current;
+      code = rawText;
+      if (detectedScanners > 1) {
+        nextLaneRef.current = (nextLaneRef.current % detectedScanners) + 1;
+      }
+    }
+
+    // Ensure lane exists
+    setLanes(prev => {
+      const next = { ...prev };
+      if (!next[laneId]) next[laneId] = { result: null, scanning: false };
+      next[laneId] = { ...next[laneId], scanning: true, result: null };
+      return next;
+    });
+
+    // Extract ticket code from URL if needed
+    let ticketCode = code;
+    try {
+      const url = new URL(code);
+      const parts = url.pathname.split('/');
+      const idx = parts.indexOf('tickets');
+      if (idx !== -1 && parts[idx + 1]) ticketCode = parts[idx + 1];
+    } catch {}
+
+    // Call the scan API
+    const deviceId = localStorage.getItem('scanner_device_id') || undefined;
+    try {
+      const data = await scanTicket(ticketCode.trim(), pin, deviceId, selectedEvent || null);
+      setLanes(prev => ({ ...prev, [laneId]: { result: data, scanning: false } }));
+      const isValid = data.result === 'valid' || data.status === 'valid';
+      autoResetLane(laneId, isValid ? 3000 : 4000);
+    } catch (err) {
+      setLanes(prev => ({
+        ...prev,
+        [laneId]: { result: { result: 'error', error: err.message || 'Scan failed' }, scanning: false }
+      }));
+      autoResetLane(laneId, 4000);
+    }
+  }, [detectedScanners, selectedEvent, autoResetLane]);
+
+  // Handle keystrokes from hidden input
+  const handleKeyDown = useCallback((e) => {
+    // Clear stale buffer timer
+    if (staleTimerRef.current) clearTimeout(staleTimerRef.current);
+
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const text = bufferRef.current.join('').trim();
+      bufferRef.current = [];
+      if (text.length > 3) {
+        processScan(text);
+      }
+      // Clear the input value
+      if (hiddenInputRef.current) hiddenInputRef.current.value = '';
+      return;
+    }
+
+    // Only buffer printable characters
+    if (e.key.length === 1) {
+      bufferRef.current.push(e.key);
+    }
+
+    // Stale buffer cleanup (500ms no input = discard)
+    staleTimerRef.current = setTimeout(() => {
+      bufferRef.current = [];
+      if (hiddenInputRef.current) hiddenInputRef.current.value = '';
+    }, 500);
+  }, [processScan]);
+
+  const laneCount = Math.max(detectedScanners, Object.keys(lanes).length);
+  const laneIds = Array.from({ length: laneCount }, (_, i) => i + 1);
+
+  return (
+    <div className="space-y-4">
+      {/* Hidden input captures all keystrokes */}
+      <input
+        ref={hiddenInputRef}
+        type="text"
+        className="fixed -top-96 left-0 opacity-0 w-0 h-0"
+        onKeyDown={handleKeyDown}
+        autoFocus
+        autoComplete="off"
+        autoCorrect="off"
+        tabIndex={0}
+      />
+
+      {/* Status bar */}
+      <div className="flex items-center justify-between bg-pavilion-800 border border-pavilion-600/50 rounded-xl px-4 py-3">
+        <div className="flex items-center gap-2">
+          <Usb className="w-4 h-4 text-green-400" />
+          <span className="text-sm text-gray-300">USB Scanner Mode</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-gray-500">{laneCount === 1 ? '1 scanner' : `${laneCount} scanners`}</span>
+          <button
+            onClick={() => {
+              const next = detectedScanners >= 3 ? 1 : detectedScanners + 1;
+              setDetectedScanners(next);
+              const newLanes = {};
+              for (let i = 1; i <= next; i++) newLanes[i] = lanes[i] || { result: null, scanning: false };
+              setLanes(newLanes);
+            }}
+            className="text-xs text-gold-400 hover:text-gold-300 transition-colors"
+          >
+            {laneCount === 1 ? '+ Add lane' : laneCount >= 3 ? 'Reset to 1' : '+ Add lane'}
+          </button>
+        </div>
+      </div>
+
+      {/* Scanner lanes */}
+      <div className={`flex gap-4 ${laneCount === 1 ? '' : ''}`}>
+        {laneIds.map(id => (
+          <ScanLane
+            key={id}
+            laneId={id}
+            label={laneCount > 1 ? `Scanner ${id}` : 'Scanner'}
+            result={lanes[id]?.result}
+            scanning={lanes[id]?.scanning}
+          />
+        ))}
+      </div>
+
+      {/* Instructions */}
+      <div className="text-center space-y-1">
+        <p className="text-gray-500 text-xs">Point USB scanner at ticket QR code — results appear automatically</p>
+        {laneCount === 1 && (
+          <p className="text-gray-600 text-xs">Configure scanner prefix (1| or 2|) for multi-scanner support</p>
+        )}
+      </div>
     </div>
   );
 }
@@ -335,26 +547,49 @@ function CameraScanner({ onScan, enabled }) {
 // ─── Main Scanner Screen ────────────────────────────────────
 
 function ScannerInterface({ pin, userName }) {
-  const [mode, setMode] = useState('camera'); // 'camera' | 'manual'
+  const [mode, setMode] = useState('camera'); // 'camera' | 'manual' | 'usb'
   const [code, setCode] = useState('');
   const [scanning, setScanning] = useState(false);
   const [result, setResult] = useState(null);
   const [stats, setStats] = useState(null);
   const [events, setEvents] = useState([]);
   const [selectedEvent, setSelectedEvent] = useState('');
+  const [autoEvent, setAutoEvent] = useState(null);
+  const [eventMode, setEventMode] = useState('');
+  const [manualOverride, setManualOverride] = useState(false);
   const [deviceName, setDeviceName] = useState(() => localStorage.getItem('scanner_device_id') || '');
   const [showDeviceSettings, setShowDeviceSettings] = useState(false);
   const inputRef = useRef(null);
 
-  // Load events list
+  // Auto-detect current event + load all events as fallback
   useEffect(() => {
+    fetchCurrentEvent(pin)
+      .then((data) => {
+        if (data.event) {
+          setAutoEvent(data.event);
+          setEventMode(data.mode);
+          if (!manualOverride) setSelectedEvent(String(data.event.id));
+        }
+      })
+      .catch(() => {});
     fetchEvents()
       .then((data) => {
         const list = Array.isArray(data) ? data : data.events || [];
         setEvents(list);
       })
       .catch(() => {});
-  }, []);
+    // Re-check every 5 minutes
+    const iv = setInterval(() => {
+      fetchCurrentEvent(pin).then((data) => {
+        if (data.event) {
+          setAutoEvent(data.event);
+          setEventMode(data.mode);
+          if (!manualOverride) setSelectedEvent(String(data.event.id));
+        }
+      }).catch(() => {});
+    }, 5 * 60 * 1000);
+    return () => clearInterval(iv);
+  }, [pin, manualOverride]);
 
   // Load scan stats
   const loadStats = useCallback(() => {
@@ -378,7 +613,7 @@ function ScannerInterface({ pin, userName }) {
     console.log('[Scanner] Scanning code:', ticketCode.trim(), 'with pin:', pin ? '****' : 'NONE');
 
     try {
-      const data = await scanTicket(ticketCode.trim(), pin, deviceId);
+      const data = await scanTicket(ticketCode.trim(), pin, deviceId, selectedEvent || null);
       console.log('[Scanner] Response:', JSON.stringify(data));
       setResult(data);
       loadStats();
@@ -474,14 +709,52 @@ function ScannerInterface({ pin, userName }) {
             <Keyboard className="w-4 h-4" />
             Manual
           </button>
+          <button
+            onClick={() => setMode('usb')}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-all ${
+              mode === 'usb'
+                ? 'bg-gold-500 text-pavilion-900'
+                : 'bg-pavilion-800 border border-pavilion-600/50 text-gray-400 hover:text-white'
+            }`}
+          >
+            <Usb className="w-4 h-4" />
+            USB
+          </button>
         </div>
 
         {/* Event selector */}
-        {events.length > 0 && (
+        {/* Active event display */}
+        {autoEvent && !manualOverride && (
+          <div className={`mb-4 rounded-xl p-3 border ${
+            eventMode === "live" ? "bg-green-500/10 border-green-500/30" :
+            eventMode === "pre-event" ? "bg-amber-500/10 border-amber-500/30" :
+            "bg-pavilion-800 border-pavilion-600/50"
+          }`}>
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  {eventMode === "live" && <span className="text-green-400 text-xs font-bold animate-pulse">{String.fromCharCode(9679)} LIVE</span>}
+                  {eventMode === "pre-event" && <span className="text-amber-400 text-xs font-bold">DOORS SOON</span>}
+                  {eventMode === "upcoming" && <span className="text-gray-400 text-xs font-bold">NEXT EVENT</span>}
+                </div>
+                <p className="text-white text-sm font-semibold mt-0.5">{autoEvent.title}</p>
+              </div>
+              <button
+                onClick={() => setManualOverride(true)}
+                className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+              >
+                Change
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Manual event selector (shown if override or no auto-event) */}
+        {(manualOverride || !autoEvent) && events.length > 0 && (
           <div className="relative mb-4">
             <select
               value={selectedEvent}
-              onChange={(e) => setSelectedEvent(e.target.value)}
+              onChange={(e) => { setSelectedEvent(e.target.value); setManualOverride(true); }}
               className="w-full appearance-none px-4 py-3 bg-pavilion-800 border border-pavilion-600/50 rounded-xl text-white text-sm focus:border-gold-500 focus:outline-none pr-10"
             >
               <option value="">All Events</option>
@@ -492,6 +765,14 @@ function ScannerInterface({ pin, userName }) {
               ))}
             </select>
             <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+            {manualOverride && autoEvent && (
+              <button
+                onClick={() => { setManualOverride(false); setSelectedEvent(String(autoEvent.id)); }}
+                className="mt-2 text-xs text-gold-400 hover:underline"
+              >
+                {String.fromCharCode(8592)} Back to auto-detect ({autoEvent.title})
+              </button>
+            )}
           </div>
         )}
 
@@ -555,6 +836,11 @@ function ScannerInterface({ pin, userName }) {
               Type the ticket code or use an external QR scanner app to paste the code
             </p>
           </div>
+        )}
+
+        {/* USB scanner mode */}
+        {mode === 'usb' && (
+          <UsbScannerMode pin={pin} selectedEvent={selectedEvent} />
         )}
       </div>
     </div>

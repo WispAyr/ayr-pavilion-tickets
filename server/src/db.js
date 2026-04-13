@@ -63,11 +63,6 @@ function initialize() {
       status TEXT DEFAULT 'pending' CHECK(status IN ('pending','paid','refunded','cancelled')),
       stripe_session_id TEXT,
       stripe_payment_intent TEXT,
-      refund_amount INTEGER DEFAULT 0,
-      refund_reason TEXT,
-      refund_notes TEXT,
-      refunded_at TEXT,
-      stripe_refund_id TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );
@@ -109,29 +104,6 @@ function initialize() {
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS admin_users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT UNIQUE NOT NULL,
-      email TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      display_name TEXT,
-      role TEXT DEFAULT 'admin' CHECK(role IN ('owner','admin','staff')),
-      active INTEGER DEFAULT 1,
-      last_login TEXT,
-      reset_token TEXT,
-      reset_token_expires TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS scanner_users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      pin TEXT UNIQUE NOT NULL,
-      active INTEGER DEFAULT 1,
-      created_at TEXT DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS email_logs (
@@ -231,6 +203,31 @@ function initialize() {
       content TEXT NOT NULL,
       created_at TEXT DEFAULT (datetime('now'))
     );
+
+    -- Ticket Protection
+    CREATE TABLE IF NOT EXISTS protection_tiers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      min_price INTEGER NOT NULL,
+      max_price INTEGER,
+      fee INTEGER NOT NULL,
+      active INTEGER DEFAULT 1,
+      sort_order INTEGER DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS protection_claims (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL REFERENCES orders(id),
+      claim_ref TEXT UNIQUE NOT NULL,
+      reason TEXT NOT NULL,
+      reason_category TEXT DEFAULT 'other',
+      customer_email TEXT NOT NULL,
+      status TEXT DEFAULT 'pending' CHECK(status IN ('pending','approved','denied')),
+      admin_notes TEXT,
+      refund_amount INTEGER,
+      requested_at TEXT DEFAULT (datetime('now')),
+      resolved_at TEXT,
+      resolved_by TEXT
+    );
   `);
 
   // Add age range columns to ticket_types (safe to run multiple times)
@@ -245,45 +242,55 @@ function initialize() {
     db.exec('ALTER TABLE ticket_types ADD COLUMN age_label TEXT');
   }
 
-  // Add pending_data column to orders (stores addon/waiver data to avoid Stripe metadata limits)
+  // Add protection columns to orders table
   const orderCols = db.prepare("PRAGMA table_info(orders)").all().map(c => c.name);
-  if (!orderCols.includes('pending_data')) {
-    db.exec('ALTER TABLE orders ADD COLUMN pending_data TEXT');
+  if (!orderCols.includes('protection_opted')) {
+    db.exec('ALTER TABLE orders ADD COLUMN protection_opted INTEGER DEFAULT 0');
+  }
+  if (!orderCols.includes('protection_fee')) {
+    db.exec('ALTER TABLE orders ADD COLUMN protection_fee INTEGER DEFAULT 0');
   }
 
-  // Add device_id column to scans (scanner device identity)
-  const scanCols = db.prepare("PRAGMA table_info(scans)").all().map(c => c.name);
-  if (!scanCols.includes('device_id')) {
-    db.exec('ALTER TABLE scans ADD COLUMN device_id TEXT');
+  // Seed default protection tiers if empty
+  const tierCount = db.prepare('SELECT COUNT(*) as count FROM protection_tiers').get();
+  if (tierCount.count === 0) {
+    db.exec(`
+      INSERT INTO protection_tiers (min_price, max_price, fee, sort_order) VALUES (0, 1500, 150, 1);
+      INSERT INTO protection_tiers (min_price, max_price, fee, sort_order) VALUES (1501, 3000, 250, 2);
+      INSERT INTO protection_tiers (min_price, max_price, fee, sort_order) VALUES (3001, 5000, 500, 3);
+      INSERT INTO protection_tiers (min_price, max_price, fee, sort_order) VALUES (5001, 8000, 750, 4);
+      INSERT INTO protection_tiers (min_price, max_price, fee, sort_order) VALUES (8001, NULL, 1000, 5);
+    `);
   }
 
-  // Session transfer audit log
+  // --- Complimentary Tickets ---
   db.exec(`
-    CREATE TABLE IF NOT EXISTS session_transfers (
+    CREATE TABLE IF NOT EXISTS comp_codes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ticket_id INTEGER NOT NULL REFERENCES tickets(id),
-      from_event_id INTEGER NOT NULL REFERENCES events(id),
-      to_event_id INTEGER NOT NULL REFERENCES events(id),
-      transferred_by TEXT NOT NULL,
-      reason TEXT,
-      capacity_override INTEGER DEFAULT 0,
-      created_at TEXT DEFAULT (datetime('now'))
+      code TEXT UNIQUE NOT NULL,
+      event_id INTEGER NOT NULL REFERENCES events(id),
+      max_tickets INTEGER NOT NULL DEFAULT 10,
+      used_tickets INTEGER DEFAULT 0,
+      recipient_name TEXT,
+      recipient_email TEXT,
+      notes TEXT,
+      active INTEGER DEFAULT 1,
+      created_by TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      expires_at TEXT
     );
   `);
 
-  // Seed default admin user if none exist
-  const adminCount = db.prepare('SELECT COUNT(*) as count FROM admin_users').get();
-  if (adminCount.count === 0) {
-    const bcryptjs = require('bcryptjs');
-    const hash = bcryptjs.hashSync(process.env.ADMIN_PASSWORD || 'pavilion-admin-2026', 10);
-    db.prepare(`INSERT INTO admin_users (username, email, password_hash, display_name, role) VALUES (?, ?, ?, ?, ?)`).run(
-      process.env.ADMIN_USERNAME || 'admin',
-      'admin@ayrpavilion.com',
-      hash,
-      'Admin',
-      'owner'
-    );
-    console.log('Default admin user created');
+  if (!orderCols.includes('comp_code_id')) {
+    db.exec('ALTER TABLE orders ADD COLUMN comp_code_id INTEGER');
+  }
+
+  if (!orderCols.includes('refund_amount')) {
+    db.exec('ALTER TABLE orders ADD COLUMN refund_amount INTEGER DEFAULT 0');
+  }
+
+  if (!orderCols.includes('marketing_opt_in')) {
+    db.exec('ALTER TABLE orders ADD COLUMN marketing_opt_in INTEGER DEFAULT 0');
   }
 
   console.log('Database initialized successfully');

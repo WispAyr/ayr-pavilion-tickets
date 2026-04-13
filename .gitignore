@@ -2,5 +2,9 @@ node_modules/
 dist/
 data/
 .env
+.env.bak*
 *.db
+*.sqlite
+*.bak
 .DS_Store
+._*

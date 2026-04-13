@@ -48,11 +48,16 @@ export default function EventCard({ event }) {
     : event.lowestPrice;
 
   const badge = getStatusBadge(event.status);
+  const isSoldOut = event.status === 'sold-out';
 
   return (
     <Link
       to={`/events/${event.slug}`}
-      className="group block bg-pavilion-800 border border-pavilion-600/50 rounded-xl overflow-hidden hover:-translate-y-1 hover:shadow-2xl hover:shadow-gold-500/5 transition-all duration-200"
+      className={`group block bg-pavilion-800 border rounded-xl overflow-hidden transition-all duration-200 ${
+        isSoldOut
+          ? 'border-red-500/30 opacity-75 hover:opacity-90'
+          : 'border-pavilion-600/50 hover:-translate-y-1 hover:shadow-2xl hover:shadow-gold-500/5'
+      }`}
     >
       {/* Image / Gradient placeholder */}
       <div className="relative aspect-[16/9] overflow-hidden">
@@ -60,7 +65,7 @@ export default function EventCard({ event }) {
           <img
             src={event.imageUrl}
             alt={event.title}
-            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+            className={`w-full h-full object-cover transition-transform duration-300 ${isSoldOut ? 'grayscale-[40%]' : 'group-hover:scale-105'}`}
           />
         ) : (
           <div className="w-full h-full bg-gradient-to-br from-pavilion-700 via-pavilion-800 to-pavilion-900 flex items-center justify-center">
@@ -71,15 +76,23 @@ export default function EventCard({ event }) {
         )}
         <div className="absolute inset-0 bg-gradient-to-t from-pavilion-900/80 to-transparent" />
 
-        {/* Status badge */}
-        <span className={`absolute top-3 right-3 px-2.5 py-0.5 text-xs font-semibold rounded-full border ${badge.className}`}>
-          {badge.label}
-        </span>
+        {/* Sold out overlay or status badge */}
+        {isSoldOut ? (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+            <span className="px-5 py-2.5 bg-red-600 text-white text-lg font-black uppercase tracking-widest rounded-lg shadow-lg shadow-red-900/50 -rotate-3">
+              Sold Out
+            </span>
+          </div>
+        ) : (
+          <span className={`absolute top-3 right-3 px-2.5 py-0.5 text-xs font-semibold rounded-full border ${badge.className}`}>
+            {badge.label}
+          </span>
+        )}
       </div>
 
       {/* Details */}
       <div className="p-4 space-y-3">
-        <h3 className="text-lg font-bold text-white group-hover:text-gold-400 transition-colors line-clamp-2">
+        <h3 className={`text-lg font-bold line-clamp-2 transition-colors ${isSoldOut ? 'text-gray-400' : 'text-white group-hover:text-gold-400'}`}>
           {event.title}
         </h3>
 
@@ -96,13 +109,15 @@ export default function EventCard({ event }) {
           )}
         </div>
 
-        {lowestPrice != null && (
-          <div className="pt-2 border-t border-pavilion-600/30">
+        <div className="pt-2 border-t border-pavilion-600/30">
+          {isSoldOut ? (
+            <span className="text-red-400 font-bold uppercase text-sm tracking-wide">Sold Out</span>
+          ) : lowestPrice != null ? (
             <span className="text-gold-400 font-semibold">
               From {formatPrice(lowestPrice)}
             </span>
-          </div>
-        )}
+          ) : null}
+        </div>
       </div>
     </Link>
   );
