@@ -211,9 +211,9 @@ export default function TicketViewPage() {
               <StatusBadge status={ticket.status} />
             </div>
 
-            {ticket.status === 'used' && ticket.scannedAt && (
+            {ticket.status === 'used' && ticket.checkedInAt && (
               <p className="text-center text-xs text-gray-500">
-                Scanned at {new Date(ticket.scannedAt).toLocaleString('en-GB')}
+                Scanned at {new Date(ticket.checkedInAt).toLocaleString('en-GB')}
               </p>
             )}
           </div>

@@ -1,9 +1,9 @@
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
-const express = require('express');
 const http = require('http');
 const { WebSocketServer } = require('ws');
+const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
@@ -23,7 +23,7 @@ app.set('trust proxy', 1);
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 500,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, please try again later' }
@@ -74,10 +74,14 @@ const scanRoutes = require('./routes/scan');
 const adminRoutes = require('./routes/admin');
 const addonsRoutes = require('./routes/addons');
 const waiversRoutes = require('./routes/waivers');
+const protectionRoutes = require('./routes/protection');
+const compsRoutes = require('./routes/comps');
 
 const trackingRoutes = require('./routes/tracking');
 const socialRoutes = require('./routes/social');
 const doorRoutes = require('./routes/door');
+
+app.use('/api/door', doorRoutes);
 app.use('/api/track', trackingRoutes);
 app.use('/api/events', eventsRoutes);
 app.use('/api', ticketTypesRoutes);
@@ -89,7 +93,10 @@ app.use('/api/admin/login', authLimiter);
 app.use('/api/admin', adminRoutes);
 app.use('/api/stripe', stripeRoutes);
 app.use('/api', socialRoutes);
-app.use('/api/door', doorRoutes);
+app.use('/api/protection', protectionRoutes);
+app.use('/api', protectionRoutes);
+app.use('/api/comps', compsRoutes);
+app.use('/api', compsRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -107,42 +114,42 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-const PORT = process.env.PORT || 3970;
+// Create HTTP server and WebSocket server
 const server = http.createServer(app);
+const wss = new WebSocketServer({ server, path: '/ws/door' });
 
-// ─── WebSocket server for /ws/door ─────────────────────────
-const wss = new WebSocketServer({ noServer: true });
-const doorClients = new Set();
-
+// Track connected door clients
 wss.on('connection', (ws) => {
-  doorClients.add(ws);
-  ws.on('close', () => doorClients.delete(ws));
-  ws.on('error', () => doorClients.delete(ws));
+  console.log('[WS] Door client connected');
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+  ws.on('close', () => { console.log('[WS] Door client disconnected'); });
 });
 
-server.on('upgrade', (req, socket, head) => {
-  if (req.url === '/ws/door') {
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit('connection', ws, req);
-    });
-  } else {
-    socket.destroy();
-  }
-});
+// Heartbeat to clean up dead connections
+const wsInterval = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (!ws.isAlive) return ws.terminate();
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 30000);
+wss.on('close', () => clearInterval(wsInterval));
 
-// Wire broadcast into scan route
-function broadcastScan(data) {
-  const msg = JSON.stringify({ type: 'scan', ...data });
-  for (const client of doorClients) {
-    if (client.readyState === 1) { // WebSocket.OPEN
-      client.send(msg);
+// Wire up scan broadcast to push to all connected door clients
+scanRoutes.setBroadcast((data) => {
+  const message = JSON.stringify({ type: 'scan', data });
+  wss.clients.forEach((client) => {
+    if (client.readyState === 1) {
+      client.send(message);
     }
-  }
-}
-scanRoutes.setBroadcast(broadcastScan);
+  });
+});
 
+const PORT = process.env.PORT || 3970;
 server.listen(PORT, () => {
   console.log(`Ayr Pavilion Tickets API running on port ${PORT}`);
+  console.log(`WebSocket server active on /ws/door`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 });
 

@@ -14,7 +14,7 @@ router.get('/overview', adminAuth, (req, res) => {
     const orders = db.prepare("SELECT COUNT(*) as total, COUNT(CASE WHEN status='paid' THEN 1 END) as paid, COUNT(CASE WHEN status='pending' THEN 1 END) as pending, COUNT(CASE WHEN status='refunded' THEN 1 END) as refunded, COUNT(CASE WHEN status='cancelled' THEN 1 END) as cancelled FROM orders").get();
     const tickets = db.prepare("SELECT COUNT(*) as total, COUNT(CASE WHEN status='valid' THEN 1 END) as valid, COUNT(CASE WHEN status='used' THEN 1 END) as used, COUNT(CASE WHEN status='cancelled' THEN 1 END) as cancelled, COUNT(CASE WHEN status='refunded' THEN 1 END) as refunded FROM tickets").get();
     const events = db.prepare("SELECT COUNT(*) as total, COUNT(CASE WHEN status='on-sale' THEN 1 END) as on_sale, COUNT(CASE WHEN status='sold-out' THEN 1 END) as sold_out, COUNT(CASE WHEN status='completed' THEN 1 END) as completed FROM events").get();
-    const scans = db.prepare("SELECT COUNT(*) as total, COUNT(CASE WHEN result='success' THEN 1 END) as success, COUNT(CASE WHEN result='already_used' THEN 1 END) as already_used, COUNT(CASE WHEN result='invalid' THEN 1 END) as invalid FROM scans").get();
+    const scans = db.prepare("SELECT COUNT(*) as total, COUNT(CASE WHEN result='valid' THEN 1 END) as success, COUNT(CASE WHEN result='already_used' THEN 1 END) as already_used, COUNT(CASE WHEN result='invalid' THEN 1 END) as invalid FROM scans").get();
 
     // Avg order value
     const avgOrder = db.prepare("SELECT COALESCE(AVG(total), 0) as avg FROM orders WHERE status = 'paid'").get();
@@ -76,15 +76,22 @@ router.get('/by-event', adminAuth, (req, res) => {
 
     const data = db.prepare(`
       SELECT e.id, e.title, e.date_time, e.status, e.capacity,
-        COUNT(DISTINCT o.id) as order_count,
-        COALESCE(SUM(o.total), 0) as revenue,
-        COUNT(t.id) as tickets_sold,
-        COUNT(CASE WHEN t.status='used' THEN 1 END) as checked_in,
-        COALESCE(SUM(o.refund_amount), 0) as refunded
+        COALESCE(os.order_count, 0) as order_count,
+        COALESCE(os.revenue, 0) as revenue,
+        COALESCE(ts.tickets_sold, 0) as tickets_sold,
+        COALESCE(ts.checked_in, 0) as checked_in,
+        COALESCE(os.refunded, 0) as refunded
       FROM events e
-      LEFT JOIN orders o ON o.event_id = e.id AND o.status IN ('paid','refunded')
-      LEFT JOIN tickets t ON t.event_id = e.id AND t.status IN ('valid','used')
-      GROUP BY e.id
+      LEFT JOIN (
+        SELECT event_id, COUNT(*) as order_count, SUM(total) as revenue, SUM(refund_amount) as refunded
+        FROM orders WHERE status IN ('paid','refunded')
+        GROUP BY event_id
+      ) os ON os.event_id = e.id
+      LEFT JOIN (
+        SELECT event_id, COUNT(*) as tickets_sold, COUNT(CASE WHEN status='used' THEN 1 END) as checked_in
+        FROM tickets WHERE status IN ('valid','used')
+        GROUP BY event_id
+      ) ts ON ts.event_id = e.id
       ORDER BY e.date_time DESC
     `).all();
 
@@ -128,7 +135,7 @@ router.get('/scans-timeline', adminAuth, (req, res) => {
     const data = db.prepare(`
       SELECT date(scanned_at) as date,
         COUNT(*) as total,
-        COUNT(CASE WHEN result='success' THEN 1 END) as success,
+        COUNT(CASE WHEN result='valid' THEN 1 END) as success,
         COUNT(CASE WHEN result='already_used' THEN 1 END) as duplicate,
         COUNT(CASE WHEN result='invalid' THEN 1 END) as invalid
       FROM scans
@@ -152,7 +159,7 @@ router.get('/scanner-leaderboard', adminAuth, (req, res) => {
     const data = db.prepare(`
       SELECT s.scanned_by as name,
         COUNT(*) as total_scans,
-        COUNT(CASE WHEN s.result='success' THEN 1 END) as successful,
+        COUNT(CASE WHEN s.result='valid' THEN 1 END) as successful,
         MIN(s.scanned_at) as first_scan,
         MAX(s.scanned_at) as last_scan
       FROM scans s
@@ -236,7 +243,7 @@ router.get('/event/:eventId', adminAuth, (req, res) => {
         COUNT(CASE WHEN t.status='used' THEN 1 END) as checked_in,
         COUNT(CASE WHEN t.status='cancelled' THEN 1 END) as cancelled
       FROM ticket_types tt
-      LEFT JOIN tickets t ON t.ticket_type_id = tt.id AND t.status IN ('valid','used')
+      LEFT JOIN tickets t ON t.ticket_type_id = tt.id AND t.status IN ('valid','used','cancelled')
       WHERE tt.event_id = ?
       GROUP BY tt.id
       ORDER BY tt.sort_order
