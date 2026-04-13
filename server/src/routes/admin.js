@@ -1141,21 +1141,7 @@ router.get('/performance/events', adminAuth, (req, res) => {
       const checkedIn = ttStats.checked_in || 0;
       const noShows = ttStats.no_shows || 0;
 
-      results.push({
-        id: event.id,
-        title: event.title,
-        date_time: event.date_time,
-        status: event.status,
-        sell_through_pct: capacity > 0 ? Math.round((sold / capacity) * 1000) / 10 : 0,
-        checkin_rate: sold > 0 ? Math.round((checkedIn / sold) * 1000) / 10 : 0,
-        no_show_pct: sold > 0 ? Math.round((noShows / sold) * 1000) / 10 : 0,
-        addon_uptake_pct: addonStats.ticket_count > 0 ? Math.round((addonStats.addon_selections / addonStats.ticket_count) * 1000) / 10 : 0,
-        protection_claim_rate: protClaims.protected_orders > 0 ? Math.round((protClaims.claims / protClaims.protected_orders) * 1000) / 10 : 0,
-        avg_arrival_offset_mins: avgArrivalOffset
-      });
-    }
-
-    res.json(results);
+      results.push({        id: event.id,        title: event.title,        date: event.date_time,        status: event.status,        sell_through: capacity > 0 ? Math.round((sold / capacity) * 1000) / 10 : 0,        checkin_rate: sold > 0 ? Math.round((checkedIn / sold) * 1000) / 10 : 0,        no_show_rate: sold > 0 ? Math.round((noShows / sold) * 1000) / 10 : 0,        add_on_uptake: addonStats.ticket_count > 0 ? Math.round((addonStats.addon_selections / addonStats.ticket_count) * 1000) / 10 : 0,        protection_claim_rate: protClaims.protected_orders > 0 ? Math.round((protClaims.claims / protClaims.protected_orders) * 1000) / 10 : 0,        avg_arrival_offset_mins: avgArrivalOffset      });    }    const totalEvents = results.length;    const avgCheckinRate = totalEvents > 0 ? Math.round(results.reduce((s, e) => s + e.checkin_rate, 0) / totalEvents * 10) / 10 : 0;    const avgSellThrough = totalEvents > 0 ? Math.round(results.reduce((s, e) => s + e.sell_through, 0) / totalEvents * 10) / 10 : 0;    const avgNoShowRate = totalEvents > 0 ? Math.round(results.reduce((s, e) => s + e.no_show_rate, 0) / totalEvents * 10) / 10 : 0;    res.json({      events: results,      summary: { total_events: totalEvents, avg_checkin_rate: avgCheckinRate, avg_sell_through: avgSellThrough, avg_no_show_rate: avgNoShowRate }    });
   } catch (err) {
     console.error('Performance events error:', err);
     res.status(500).json({ error: 'Failed to load event performance' });
