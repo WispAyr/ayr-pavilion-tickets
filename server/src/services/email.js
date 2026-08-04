@@ -1,9 +1,23 @@
 const { generateQrBuffer, generateGroupPassQR } = require('./qr');
 const { getDb } = require('../db');
 
-// HTTP relay via PU2 mail relay (direct SMTP blocked on VPS)
+// HTTP relay via the pu2 mail relay (direct SMTP is blocked on the VPS).
+// Reached over an autossh reverse tunnel: MAIL_RELAY_URL=http://127.0.0.1:3880 (.env).
+//
+// There is deliberately NO default here. The old fallback was http://142.202.191.208:8025,
+// a host that has had nothing listening on that port for as long as the logs go back — so
+// if .env ever went missing the app started up perfectly happily and silently failed to
+// deliver every ticket. A missing relay config is a deploy fault, and it should be loud
+// and immediate, not discovered weeks later by a customer at the door.
+if (!process.env.MAIL_RELAY_URL) {
+  throw new Error(
+    'MAIL_RELAY_URL is not set — refusing to start. Ticket email cannot be delivered ' +
+    'without the mail relay. Expected MAIL_RELAY_URL=http://127.0.0.1:3880 in server/.env'
+  );
+}
+
 async function sendViaRelay({ from, to, subject, html, attachments }) {
-  const relayUrl = process.env.MAIL_RELAY_URL || 'http://142.202.191.208:8025';
+  const relayUrl = process.env.MAIL_RELAY_URL;
   const relayKey = process.env.MAIL_RELAY_KEY || 'skynet-mail-relay-key-2026';
   const body = { from, to, subject, html };
   if (attachments && attachments.length > 0) {
@@ -180,11 +194,11 @@ function buildOrderSummaryBlock({ orderItems, addonDetails, bookingFee, protecti
 function buildEmailHtml({ eventTitle, dateTime, doorsOpen, venue, ticketTypeName, ticketCode, quantity, orderRef, calendarUrl, emailLogId, addonDetails, protectionOpted, protectionFee, isComp, orderItems, bookingFee, grandTotal, hasGroupPass }) {
   const eventDate = new Date(dateTime);
   const formattedDate = eventDate.toLocaleDateString('en-GB', {
-    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/London'
   });
-  const formattedTime = eventDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const formattedTime = eventDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' });
   const doorsText = doorsOpen
-    ? new Date(doorsOpen).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+    ? new Date(doorsOpen).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' })
     : null;
 
   const appUrl = process.env.APP_URL || 'https://tickets.ayrpavilion.com';
@@ -445,6 +459,9 @@ async function sendTicketEmail({ to, customerName, eventTitle, dateTime, doorsOp
     try { groupPassQrBuffer = await generateGroupPassQR(groupPassToken); } catch (e) { console.error("Group pass QR error:", e.message); }
   }
 
+  let sentCount = 0;
+  const failures = [];
+
   for (const ticket of tickets) {
     const subject = isComp ? `VIP Tickets: ${eventTitle} - ${venue}` : `Your Tickets: ${eventTitle} - ${venue}`;
 
@@ -496,11 +513,18 @@ async function sendTicketEmail({ to, customerName, eventTitle, dateTime, doorsOp
       });
 
       markEmailSent(emailLogId);
+      sentCount++;
     } catch (err) {
       console.error(`Failed to send ticket email to ${to} for ticket ${ticket.code}:`, err.message);
       markEmailFailed(emailLogId, err.message);
+      failures.push({ ticketCode: ticket.code, error: err.message });
     }
   }
+
+  // Failed sends are already logged as 'failed' rows for the outbox worker to
+  // retry; callers that need to report honestly (e.g. the staff resend route)
+  // must check `failed` rather than assume success.
+  return { sent: sentCount, failed: failures.length, failures };
 }
 
 /**
@@ -657,26 +681,43 @@ async function resendEmail(emailLogId) {
       WHERE t.order_id = ?
     `).all(order.id);
 
-    // Re-queue: update status
-    db.prepare(`UPDATE email_logs SET status = 'queued', error = NULL WHERE id = ?`).run(emailLogId);
+    // sendTicketEmail writes its OWN log rows for the actual send. This row is only
+    // the record of the ORIGINAL attempt, so it must end up in a terminal state —
+    // leaving it 'queued' makes the log claim an undelivered email forever, and the
+    // outbox worker would keep re-picking it and re-mailing the customer on a loop.
+    db.prepare(`UPDATE email_logs SET status = 'queued', error = NULL,
+                attempts = COALESCE(attempts,0) + 1, last_attempt_at = datetime('now')
+                WHERE id = ?`).run(emailLogId);
 
-    await sendTicketEmail({
-      to: log.recipient,
-      customerName: order.customer_name,
-      eventTitle: order.event_title,
-      dateTime: order.date_time,
-      doorsOpen: order.doors_open,
-      venue: order.venue,
-      ticketTypeName: tickets[0]?.ticketTypeName || 'General',
-      tickets,
-      orderRef: order.order_ref,
-      orderId: order.id
-    });
+    try {
+      await sendTicketEmail({
+        to: log.recipient,
+        customerName: order.customer_name,
+        eventTitle: order.event_title,
+        dateTime: order.date_time,
+        doorsOpen: order.doors_open,
+        venue: order.venue,
+        ticketTypeName: tickets[0]?.ticketTypeName || 'General',
+        tickets,
+        orderRef: order.order_ref,
+        orderId: order.id
+      });
+    } catch (err) {
+      db.prepare(`UPDATE email_logs SET status = 'failed', error = ? WHERE id = ?`)
+        .run(err.message, emailLogId);
+      throw err;
+    }
+    db.prepare(`UPDATE email_logs SET status = 'superseded',
+                error = 'resent successfully; see the newer log row(s) for this recipient'
+                WHERE id = ?`).run(emailLogId);
     return;
   }
 
-  // Re-queue
-  db.prepare(`UPDATE email_logs SET status = 'queued', error = NULL WHERE id = ?`).run(emailLogId);
+  // Re-queue (attempt-counted, so the outbox worker can give up and escalate rather
+  // than retrying a permanently-undeliverable address forever)
+  db.prepare(`UPDATE email_logs SET status = 'queued', error = NULL,
+              attempts = COALESCE(attempts,0) + 1, last_attempt_at = datetime('now')
+              WHERE id = ?`).run(emailLogId);
 
   const calendarUrl = buildGoogleCalendarUrl({
     title: ticket.event_title,
@@ -722,7 +763,13 @@ async function resendEmail(emailLogId) {
     // Mark original as resent
     db.prepare(`UPDATE email_logs SET status = 'resent' WHERE id = ?`).run(emailLogId);
   } catch (err) {
-    markEmailFailed(newLogId, err.message);
+    // Do NOT persist the spawned row as 'failed': a fresh logEmail() row starts at
+    // attempts=0, so it becomes a second unit the outbox worker retries, resetting the
+    // give-up counter and fanning one failure into many (the 2026-08-04 resend loop that
+    // mailed one customer 60x). The SOURCE row is the worker's single retry unit.
+    db.prepare(`DELETE FROM email_logs WHERE id = ?`).run(newLogId);
+    db.prepare(`UPDATE email_logs SET status = 'failed', error = ? WHERE id = ?`)
+      .run(err.message, emailLogId);
     throw err;
   }
 }
@@ -733,7 +780,7 @@ async function resendEmail(emailLogId) {
 async function sendRefundEmail({ to, customerName, eventTitle, dateTime, venue, orderRef, refundAmount, isFullRefund, reason }) {
   const transporter = createTransporter();
   const formattedAmount = '\u00a3' + (refundAmount / 100).toFixed(2);
-  const eventDate = dateTime ? new Date(dateTime).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) : '';
+  const eventDate = dateTime ? new Date(dateTime).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/London' }) : '';
 
   const subject = `Refund Confirmation: ${orderRef} — ${eventTitle}`;
 
@@ -849,9 +896,9 @@ async function sendCompInviteEmail({ to, recipientName, eventTitle, dateTime, ve
 
   const eventDate = new Date(dateTime);
   const formattedDate = eventDate.toLocaleDateString('en-GB', {
-    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/London'
   });
-  const formattedTime = eventDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const formattedTime = eventDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' });
 
   const greeting = recipientName ? `Hi ${recipientName},` : 'Hi,';
 
@@ -1008,9 +1055,9 @@ async function sendEventReportEmail({ to, reportData }) {
 
   const eventDate = new Date(event.date_time);
   const formattedDate = isCombined
-    ? `${new Date(r.date_range.first).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })} — ${new Date(r.date_range.last).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}`
-    : eventDate.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-  const formattedTime = isCombined ? `${r.total_sessions} sessions` : eventDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    ? `${new Date(r.date_range.first).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/London' })} — ${new Date(r.date_range.last).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/London' })}`
+    : eventDate.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/London' });
+  const formattedTime = isCombined ? `${r.total_sessions} sessions` : eventDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' });
 
   // Ensure safe defaults for all sections
   r.ticket_types = r.ticket_types || [];
@@ -1216,7 +1263,7 @@ async function sendEventReportEmail({ to, reportData }) {
   if (isCombined && r.sessions && r.sessions.length > 0) {
     let sessionRows = '';
     for (const s of r.sessions) {
-      const sDate = new Date(s.date_time).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+      const sDate = new Date(s.date_time).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' });
       const ciColor = s.checkin_rate > 70 ? '#4ade80' : s.checkin_rate > 40 ? '#fbbf24' : '#ff6b6b';
       const nsColor = s.no_show_rate > 20 ? '#ff6b6b' : '#999';
       sessionRows += `
@@ -1274,7 +1321,7 @@ async function sendEventReportEmail({ to, reportData }) {
   const subject = isCombined
     ? `Combined Event Report: ${r.group_name} — ${r.total_sessions} Sessions`
     : `Event Report: ${event.title} — ${formattedDate}`;
-  const timestamp = new Date().toLocaleString('en-GB', { dateStyle: 'full', timeStyle: 'short' });
+  const timestamp = new Date().toLocaleString('en-GB', { dateStyle: 'full', timeStyle: 'short', timeZone: 'Europe/London' });
 
   const html = `<!DOCTYPE html>
 <html>
@@ -1454,4 +1501,40 @@ async function sendEventReportEmail({ to, reportData }) {
   });
 }
 
-module.exports = { sendTicketEmail, resendEmail, sendRefundEmail, sendPasswordResetEmail, sendProtectionEmail, sendCompInviteEmail, sendEventReportEmail, buildGoogleCalendarUrl };
+/**
+ * Send a passwordless sign-in link to a member (VIP area).
+ */
+async function sendMemberMagicLink(to, name, loginUrl) {
+  const transporter = createTransporter();
+  const html = `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background:#0a0e1a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <div style="max-width:520px;margin:0 auto;padding:40px 20px;">
+    <div style="background:#111827;border-radius:12px;padding:40px 32px;border:1px solid #1f2937;">
+      <div style="color:#d4af37;letter-spacing:3px;font-size:11px;text-transform:uppercase;">Ayr Pavilion</div>
+      <h1 style="color:#fff;font-size:22px;margin:14px 0 8px;">Your members sign-in link</h1>
+      <p style="color:#cbd5e1;font-size:14px;line-height:1.6;margin:0 0 8px;">Hi ${name || 'there'},</p>
+      <p style="color:#cbd5e1;font-size:14px;line-height:1.6;margin:0 0 24px;">Tap the button below to sign in to the Ayr Pavilion members area and see your VIP offers.</p>
+      <div style="text-align:center;margin:28px 0;">
+        <a href="${loginUrl}" style="display:inline-block;background:#d4af37;color:#0a0e1a;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:15px;">Sign in</a>
+      </div>
+      <p style="color:#9aa3b2;font-size:12px;line-height:1.6;word-break:break-all;">Or paste this link into your browser:<br><span style="color:#d4af37;">${loginUrl}</span></p>
+      <p style="color:#6b7280;font-size:12px;line-height:1.6;margin-top:20px;">This link expires in 30 minutes. If you didn't request it, you can ignore this email.</p>
+      <hr style="border:none;border-top:1px solid #1f2937;margin:24px 0;">
+      <p style="color:#6b7280;font-size:11px;text-align:center;margin:0;">Ayr Pavilion, Ayr, Scotland</p>
+    </div>
+  </div>
+</body>
+</html>`;
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM || 'Ayr Pavilion <no-reply@ayrpavilion.com>',
+    to,
+    subject: 'Your Ayr Pavilion members sign-in link',
+    html,
+  });
+}
+
+module.exports = { sendTicketEmail, resendEmail, sendRefundEmail, sendPasswordResetEmail, sendProtectionEmail, sendCompInviteEmail, sendEventReportEmail, buildGoogleCalendarUrl, sendMemberMagicLink };
+
+
