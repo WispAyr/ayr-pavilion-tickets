@@ -50,7 +50,7 @@ const MAX_ATTEMPTS  = Number(process.env.OUTBOX_MAX_ATTEMPTS  || 5);
 const MAX_PER_TICK  = Number(process.env.OUTBOX_MAX_PER_TICK  || 10);
 const MAX_AGE_DAYS  = Number(process.env.OUTBOX_MAX_AGE_DAYS  || 3);
 const RELAY_URL     = process.env.MAIL_RELAY_URL;
-const RELAY_KEY     = process.env.MAIL_RELAY_KEY || 'skynet-mail-relay-key-2026';
+const RELAY_KEY     = process.env.MAIL_RELAY_KEY;
 const TG_TOKEN      = process.env.TELEGRAM_BOT_TOKEN || '';
 const TG_CHAT       = process.env.TELEGRAM_CHAT_ID   || '';
 
@@ -62,6 +62,11 @@ const BACKOFF_MIN = [1, 5, 20, 60, 180];
 if (!RELAY_URL) {
   console.error('outbox: MAIL_RELAY_URL not set — refusing to start (see server/.env)');
   process.exit(1);
+}
+
+// No hard-coded fallback for the relay key: it must come from the environment.
+if (!RELAY_KEY) {
+  throw new Error('outbox: MAIL_RELAY_KEY is not set — refusing to start. Set MAIL_RELAY_KEY in server/.env');
 }
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);

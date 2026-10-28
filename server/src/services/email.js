@@ -16,9 +16,20 @@ if (!process.env.MAIL_RELAY_URL) {
   );
 }
 
+// Same for the relay API key: no hard-coded fallback, it must come from the environment.
+if (!process.env.MAIL_RELAY_KEY) {
+  throw new Error(
+    'MAIL_RELAY_KEY is not set — refusing to start. Ticket email cannot be delivered ' +
+    'without the mail relay key. Set MAIL_RELAY_KEY in server/.env'
+  );
+}
+
 async function sendViaRelay({ from, to, subject, html, attachments }) {
   const relayUrl = process.env.MAIL_RELAY_URL;
-  const relayKey = process.env.MAIL_RELAY_KEY || 'skynet-mail-relay-key-2026';
+  const relayKey = process.env.MAIL_RELAY_KEY;
+  if (!relayKey) {
+    throw new Error('MAIL_RELAY_KEY is not set — cannot send ticket email. Set MAIL_RELAY_KEY in server/.env');
+  }
   const body = { from, to, subject, html };
   if (attachments && attachments.length > 0) {
     body.attachments = attachments.map(a => ({
